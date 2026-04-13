@@ -18,6 +18,14 @@ The project is designed around a practical workflow:
 - results are published to Telegram and Google Workspace
 - a web UI controls imports, scheduling, and cleanup
 
+![AIcallorder dashboard](assets/dashboard-home.png)
+
+For repository presentation assets and ready-to-paste GitHub metadata, see:
+
+- `docs/GITHUB_SHOWCASE.md`
+- `docs/RELEASE_TEMPLATE.md`
+- `assets/social-preview.svg`
+
 ## What It Does
 
 AIcallorder helps a team process engineering and business meetings without manual copy-paste work.
