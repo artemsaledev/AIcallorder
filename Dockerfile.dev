@@ -1,0 +1,59 @@
+# Используем Python 3.10 как базовый образ
+FROM python:3.10-slim AS dev
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    git curl wget build-essential cmake libstdc++6 unzip \
+    libopenblas-dev libncurses5-dev libncursesw5-dev \
+    fonts-liberation libappindicator3-1 xdg-utils \
+    libasound2 libgbm-dev libu2f-udev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Google Chrome
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/google-chrome-keyring.gpg && \
+    echo 'deb [signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main' | tee /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && apt-get install -y google-chrome-stable
+
+# Проверяем установленную версию Chrome
+RUN google-chrome --version
+
+# 📥 **Устанавливаем ChromeDriver, соответствующий версии Chrome**
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1) && \
+    echo "Detected Chrome version: $CHROME_VERSION" && \
+    CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_VERSION") && \
+    echo "Downloading ChromeDriver version: $CHROMEDRIVER_VERSION" && \
+    wget -q "https://storage.googleapis.com/chrome-for-testing-public/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip && \
+    unzip /tmp/chromedriver.zip -d /usr/local/bin/ && \
+    mv /usr/local/bin/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm -rf /tmp/chromedriver*
+
+# Проверяем версию ChromeDriver
+RUN chromedriver --version
+
+# Создаём рабочую директорию
+WORKDIR /app
+
+# Копируем файлы зависимостей (для кеширования)
+COPY requirements.txt . 
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем Python-скрипты
+COPY scripts/ /app/scripts/
+
+# Устанавливаем права на выполнение скриптов
+RUN chmod +x /app/scripts/*.py
+
+# Копируем файлы модели
+COPY models/ /app/models/
+
+# Копируем файл аутентификации Google Sheets
+COPY scripts/united-aura-440321-p2-c819703433e8.json /app/scripts/
+
+# Собираем Llama.cpp
+RUN git clone https://github.com/ggerganov/llama.cpp.git && \
+    cd llama.cpp && mkdir build && cd build && \
+    cmake .. && make -j
+
+# Устанавливаем точку входа (запуск вручную)
+CMD ["bash"]

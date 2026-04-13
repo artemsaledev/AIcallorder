@@ -1,0 +1,31 @@
+{
+  "routes": [
+    {
+      "name": "daily-yavdokimenko",
+      "enabled": true,
+      "title_include_keywords": [
+        "#daily",
+        "yavdokimenko",
+        "2026-04-13"
+      ],
+      "title_exclude_keywords": [],
+      "prompt_path": "promts/promts_transcription.txt"
+    },
+    {
+      "name": "payments-and-orders",
+      "enabled": true,
+      "title_include_keywords": [
+        "оплат",
+        "заказ",
+        "доставк",
+        "ina"
+      ],
+      "title_exclude_keywords": [
+        "обучение",
+        "tutorial",
+        "demo"
+      ],
+      "prompt_path": "promts/promts_transcription.txt"
+    }
+  ]
+}
