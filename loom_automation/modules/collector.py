@@ -5,6 +5,7 @@ from datetime import date, datetime
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -640,15 +641,29 @@ class LoomCollector:
         return query or None
 
     def _detect_browser_binary(self) -> str | None:
+        explicit_binary = os.environ.get("CHROME_BINARY") or os.environ.get("BROWSER_BINARY")
+        if explicit_binary and os.path.exists(explicit_binary):
+            return explicit_binary
+
         candidates = [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+            "/usr/bin/microsoft-edge",
         ]
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
+        for candidate in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
         return None
 
     def _normalize_library_url(self) -> str:
