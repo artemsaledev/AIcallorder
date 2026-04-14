@@ -163,6 +163,7 @@ def _page_shell(title: str, body: str) -> str:
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
       margin-top: 16px;
+      min-width: 0;
     }}
 
     .summary-box {{
@@ -170,11 +171,43 @@ def _page_shell(title: str, body: str) -> str:
       border-radius: 14px;
       padding: 14px;
       background: #f8fcfd;
+      min-width: 0;
+      overflow: hidden;
     }}
 
     .summary-box strong {{
       display: block;
       margin-bottom: 6px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }}
+
+    .history-panel {{
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fbfdff;
+      padding: 14px;
+    }}
+
+    .history-scroll {{
+      min-height: 720px;
+      max-height: 720px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 6px;
+    }}
+
+    .pagination {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 14px;
+    }}
+
+    .pagination .meta {{
+      color: var(--muted);
+      font-size: 14px;
     }}
 
     .mode-grid {{
@@ -285,8 +318,14 @@ def _page_shell(title: str, body: str) -> str:
       padding: 18px;
       white-space: pre-wrap;
       word-break: break-word;
+      overflow-wrap: anywhere;
       line-height: 1.5;
       overflow: auto;
+    }}
+
+    code, a, .hint, p, div {{
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }}
 
     @media (max-width: 720px) {{
@@ -421,9 +460,42 @@ def _truncate(value: str | None, limit: int = 220) -> str:
     return text[: limit - 1].rstrip(" ,;:.") + "…"
 
 
-def _operations_html() -> str:
-    meetings = workflow.storage.list_recent_meetings(limit=12)
-    runs = workflow.storage.list_recent_run_logs(limit=12)
+def _pagination_html(
+    *,
+    page_param: str,
+    current_page: int,
+    total_pages: int,
+    other_page_param: str,
+    other_page_value: int,
+) -> str:
+    if total_pages <= 1:
+        return f'<div class="pagination"><span class="meta">Page {current_page} of {max(total_pages, 1)}</span></div>'
+
+    parts = ['<div class="pagination">']
+    if current_page > 1:
+        parts.append(
+            f'<a class="button ghost" href="/?{page_param}={current_page - 1}&{other_page_param}={other_page_value}">Previous</a>'
+        )
+    parts.append(f'<span class="meta">Page {current_page} of {total_pages}</span>')
+    if current_page < total_pages:
+        parts.append(
+            f'<a class="button ghost" href="/?{page_param}={current_page + 1}&{other_page_param}={other_page_value}">Next</a>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _operations_html(meetings_page: int = 1, runs_page: int = 1) -> str:
+    page_size = 10
+    meetings_total = workflow.storage.count_meetings()
+    runs_total = workflow.storage.count_run_logs()
+    meetings_total_pages = max(1, (meetings_total + page_size - 1) // page_size)
+    runs_total_pages = max(1, (runs_total + page_size - 1) // page_size)
+    meetings_page = min(max(1, meetings_page), meetings_total_pages)
+    runs_page = min(max(1, runs_page), runs_total_pages)
+
+    meetings = workflow.storage.list_recent_meetings(limit=page_size, offset=(meetings_page - 1) * page_size)
+    runs = workflow.storage.list_recent_run_logs(limit=page_size, offset=(runs_page - 1) * page_size)
 
     meeting_rows = []
     for item in meetings:
@@ -485,14 +557,24 @@ def _operations_html() -> str:
       </div>
       <div class="section">
         <h2>Recent Processed Meetings</h2>
-        <div class="summary-grid">
-          {''.join(meeting_rows) or '<p>No processed meetings yet.</p>'}
+        <div class="history-panel">
+          <div class="history-scroll">
+            <div class="summary-grid">
+              {''.join(meeting_rows) or '<p>No processed meetings yet.</p>'}
+            </div>
+          </div>
+          {_pagination_html(page_param='meetings_page', current_page=meetings_page, total_pages=meetings_total_pages, other_page_param='runs_page', other_page_value=runs_page)}
         </div>
       </div>
       <div class="section">
         <h2>Recent Run Logs</h2>
-        <div class="summary-grid">
-          {''.join(run_rows) or '<p>No run logs yet.</p>'}
+        <div class="history-panel">
+          <div class="history-scroll">
+            <div class="summary-grid">
+              {''.join(run_rows) or '<p>No run logs yet.</p>'}
+            </div>
+          </div>
+          {_pagination_html(page_param='runs_page', current_page=runs_page, total_pages=runs_total_pages, other_page_param='meetings_page', other_page_value=meetings_page)}
         </div>
       </div>
     </div>
@@ -500,7 +582,7 @@ def _operations_html() -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index(meetings_page: int = 1, runs_page: int = 1) -> str:
     default_folder = html.escape(settings.local_video_folder or "")
     default_include = html.escape(settings.loom_title_include_keywords or "")
     default_exclude = html.escape(settings.loom_title_exclude_keywords or "")
@@ -645,7 +727,7 @@ def index() -> str:
     </form>
 
     {_scheduler_summary_html()}
-    {_operations_html()}
+    {_operations_html(meetings_page=meetings_page, runs_page=runs_page)}
 
     <script>
       const sourceInput = document.getElementById("source_mode");
@@ -749,13 +831,19 @@ def scheduler_status() -> dict:
 
 
 @app.get("/records/recent")
-def recent_records(limit: int = 25) -> dict:
-    return {"items": workflow.storage.list_recent_meetings(limit=limit)}
+def recent_records(limit: int = 25, offset: int = 0) -> dict:
+    return {
+        "items": workflow.storage.list_recent_meetings(limit=limit, offset=offset),
+        "total": workflow.storage.count_meetings(),
+    }
 
 
 @app.get("/runs/recent")
-def recent_runs(limit: int = 25) -> dict:
-    return {"items": workflow.storage.list_recent_run_logs(limit=limit)}
+def recent_runs(limit: int = 25, offset: int = 0) -> dict:
+    return {
+        "items": workflow.storage.list_recent_run_logs(limit=limit, offset=offset),
+        "total": workflow.storage.count_run_logs(),
+    }
 
 
 @app.post("/scheduler/run-local-folder")

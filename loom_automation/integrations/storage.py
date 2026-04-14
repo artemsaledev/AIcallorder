@@ -130,7 +130,7 @@ class SQLiteStorage:
             ).fetchall()
         return [(row[0], row[1], row[2], row[3]) for row in rows]
 
-    def list_recent_meetings(self, limit: int = 25) -> list[dict[str, Any]]:
+    def list_recent_meetings(self, limit: int = 25, offset: int = 0) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -138,8 +138,9 @@ class SQLiteStorage:
                 FROM meetings
                 ORDER BY COALESCE(recorded_at, '') DESC, rowid DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (max(1, limit),),
+                (max(1, limit), max(0, offset)),
             ).fetchall()
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -161,6 +162,11 @@ class SQLiteStorage:
                 }
             )
         return results
+
+    def count_meetings(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM meetings").fetchone()
+        return int(row[0]) if row else 0
 
     def get_meeting(self, loom_video_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -224,7 +230,7 @@ class SQLiteStorage:
             conn.commit()
         return int(cursor.lastrowid)
 
-    def list_recent_run_logs(self, limit: int = 25) -> list[dict[str, Any]]:
+    def list_recent_run_logs(self, limit: int = 25, offset: int = 0) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -232,8 +238,9 @@ class SQLiteStorage:
                 FROM run_logs
                 ORDER BY id DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (max(1, limit),),
+                (max(1, limit), max(0, offset)),
             ).fetchall()
         results: list[dict[str, Any]] = []
         for row in rows:
@@ -253,6 +260,11 @@ class SQLiteStorage:
                 }
             )
         return results
+
+    def count_run_logs(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM run_logs").fetchone()
+        return int(row[0]) if row else 0
 
     def clear_run_logs(self) -> int:
         with self._connect() as conn:
