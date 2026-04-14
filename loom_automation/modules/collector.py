@@ -876,6 +876,18 @@ class LoomCollector:
             last_url = current_url
             if self._is_library_url(current_url):
                 return current_url
+            blocker = self._detect_login_blocker(driver)
+            if blocker:
+                title = self._safe_page_title(driver)
+                diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-login-blocked")
+                message = blocker
+                if current_url:
+                    message += f" Last URL: {current_url}"
+                if title:
+                    message += f" | Last title: {title}"
+                if diagnostics:
+                    message += f" | Diagnostics: {diagnostics}"
+                raise TimeoutException(message)
             time.sleep(1)
         title = self._safe_page_title(driver)
         diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-library-timeout")
@@ -941,6 +953,54 @@ class LoomCollector:
             pass
 
         return ", ".join(written)
+
+    def _safe_page_source(self, driver) -> str:
+        self._switch_to_latest_window(driver)
+        try:
+            return driver.page_source or ""
+        except WebDriverException:
+            return ""
+
+    def _detect_login_blocker(self, driver) -> str | None:
+        source = self._safe_page_source(driver).lower()
+        title = self._safe_page_title(driver).lower()
+        url = self._safe_current_url(driver).lower()
+        haystack = "\n".join(part for part in (source, title, url) if part)
+
+        verification_markers = (
+            "verification code",
+            "enter code",
+            "check your email",
+            "sent a code",
+            "email verification",
+            "one-time passcode",
+            "one time passcode",
+            "two-step verification",
+            "2-step verification",
+            "two factor",
+            "2fa",
+            "otp",
+        )
+        if any(marker in haystack for marker in verification_markers):
+            return (
+                "Loom/Atlassian login is blocked by an email verification or 2FA challenge. "
+                "A manual confirmation is required once for a new browser session."
+            )
+
+        captcha_markers = (
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "verify you are human",
+            "prove you are human",
+        )
+        if any(marker in haystack for marker in captcha_markers):
+            return (
+                "Loom/Atlassian login is blocked by a captcha or human-verification challenge. "
+                "A manual confirmation is required once for a new browser session."
+            )
+
+        return None
 
     def _is_library_url(self, url: str) -> bool:
         try:
