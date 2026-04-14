@@ -182,6 +182,34 @@ Disable auto start:
 .\scripts\uninstall_startup.cmd
 ```
 
+## Linux VPS Deployment
+
+Recommended Linux production mode for Loom import:
+
+- `LOOM_HEADLESS=false`
+- `Xvfb` virtual display
+- regular Chrome instead of strict headless mode
+- system-installed `chromedriver`
+- persistent Chrome profile via `CHROME_USER_DATA_DIR`
+
+Server deployment assets are included in:
+
+- `deploy/linux/README.md`
+- `deploy/linux/install_runtime_ubuntu.sh`
+- `deploy/linux/systemd/aicallorder-xvfb.service.example`
+- `deploy/linux/systemd/aicallorder-web.service.example`
+
+Useful Linux env values:
+
+```env
+LOOM_HEADLESS=false
+CHROME_BINARY=/usr/bin/google-chrome
+CHROMEDRIVER_PATH=/usr/local/bin/chromedriver
+CHROME_USER_DATA_DIR=/opt/aicallorder/data/chrome-profile
+CHROME_WINDOW_SIZE=1600,1200
+CHROME_EXTRA_ARGS=
+```
+
 ## Temporary Public URL Without VPS
 
 If you need temporary external access before moving to VPS, the project can be exposed through a tunnel.

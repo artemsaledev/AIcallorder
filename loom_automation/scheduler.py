@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from loom_automation.models import LoomImportRequest, ProcessFolderRequest
 from loom_automation.workflow import AutomationWorkflow
@@ -55,6 +55,11 @@ class AutomationScheduler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._workflow_lock = threading.Lock()
+        self._task_threads: dict[str, threading.Thread | None] = {
+            "local_folder": None,
+            "loom_import": None,
+        }
         self.local_folder = SchedulerTaskState(
             enabled=bool(enabled and local_folder_enabled and local_folder_path),
             interval_minutes=max(1, local_folder_minutes),
@@ -81,6 +86,10 @@ class AutomationScheduler:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            local_folder_state = self.local_folder.__dict__.copy()
+            loom_state = self.loom.__dict__.copy()
+            local_folder_state["in_progress"] = self._task_is_alive_unlocked("local_folder")
+            loom_state["in_progress"] = self._task_is_alive_unlocked("loom_import")
             return {
                 "enabled": self.enabled,
                 "meeting_type": self.meeting_type,
@@ -90,8 +99,8 @@ class AutomationScheduler:
                 "active_to": self.active_to,
                 "active_weekdays": self.active_weekdays,
                 "tasks": {
-                    "local_folder": self.local_folder.__dict__.copy(),
-                    "loom_import": self.loom.__dict__.copy(),
+                    "local_folder": local_folder_state,
+                    "loom_import": loom_state,
                 },
             }
 
@@ -142,21 +151,41 @@ class AutomationScheduler:
             return {"scheduled": False, "reason": "Local folder path is not configured."}
         if not self.enabled or not self.local_folder.enabled:
             return {"scheduled": False, "reason": "Local folder scheduler is disabled."}
-        return self._execute_local_folder()
+        return self._launch_task(
+            task_name="local_folder",
+            task=self.local_folder,
+            runner=self._execute_local_folder,
+            queued_message="Local folder run queued in background.",
+        )
 
     def run_loom_now(self) -> dict[str, Any]:
         if not self.enabled or not self.loom.enabled:
             return {"scheduled": False, "reason": "Loom scheduler is disabled."}
-        return self._execute_loom_import()
+        return self._launch_task(
+            task_name="loom_import",
+            task=self.loom,
+            runner=self._execute_loom_import,
+            queued_message="Loom import queued in background.",
+        )
 
     def _run_loop(self) -> None:
         while not self._stop.is_set():
             now = datetime.utcnow()
             if self.local_folder.enabled and self._is_due(self.local_folder, now) and self._is_active_now():
-                self._execute_local_folder()
+                self._launch_task(
+                    task_name="local_folder",
+                    task=self.local_folder,
+                    runner=self._execute_local_folder,
+                    queued_message="Scheduled local folder run queued in background.",
+                )
             if self.loom.enabled and self._is_due(self.loom, now) and self._is_active_now():
-                self._execute_loom_import()
-            self._stop.wait(15)
+                self._launch_task(
+                    task_name="loom_import",
+                    task=self.loom,
+                    runner=self._execute_loom_import,
+                    queued_message="Scheduled Loom import queued in background.",
+                )
+            self._stop.wait(5)
 
     def _is_due(self, task: SchedulerTaskState, now: datetime) -> bool:
         if not task.next_run_at:
@@ -214,12 +243,59 @@ class AutomationScheduler:
         finally:
             self.workflow.loom_client.library_url = previous_library_url
 
+    def _launch_task(
+        self,
+        *,
+        task_name: str,
+        task: SchedulerTaskState,
+        runner: Callable[[], dict[str, Any]],
+        queued_message: str,
+    ) -> dict[str, Any]:
+        queued_at = datetime.utcnow().isoformat()
+        with self._lock:
+            if self._task_is_alive_unlocked(task_name):
+                return {
+                    "scheduled": False,
+                    "reason": f"{self._task_label(task_name)} is already running.",
+                    "status": task.last_status,
+                    "last_started_at": task.last_started_at,
+                    "last_finished_at": task.last_finished_at,
+                }
+            task.last_status = "queued"
+            task.last_message = queued_message
+            task.next_run_at = queued_at
+            thread = threading.Thread(
+                target=self._run_task_thread,
+                args=(task_name, runner),
+                name=f"aicallorder-{task_name}",
+                daemon=True,
+            )
+            self._task_threads[task_name] = thread
+        thread.start()
+        return {
+            "scheduled": True,
+            "background": True,
+            "status": "queued",
+            "queued_at": queued_at,
+            "message": queued_message,
+        }
+
+    def _run_task_thread(self, task_name: str, runner: Callable[[], dict[str, Any]]) -> None:
+        current_thread = threading.current_thread()
+        try:
+            with self._workflow_lock:
+                runner()
+        finally:
+            with self._lock:
+                if self._task_threads.get(task_name) is current_thread:
+                    self._task_threads[task_name] = None
+
     def _mark_started(self, task: SchedulerTaskState) -> None:
         now = datetime.utcnow().isoformat()
         with self._lock:
             task.last_started_at = now
             task.last_status = "running"
-            task.last_message = ""
+            task.last_message = "Run is in progress."
 
     def _mark_finished(self, task: SchedulerTaskState, status: str, message: str, summary: dict[str, Any]) -> None:
         now = datetime.utcnow()
@@ -311,3 +387,12 @@ class AutomationScheduler:
             return hour * 60 + minute
         except Exception:
             return default_minutes
+
+    def _task_is_alive_unlocked(self, task_name: str) -> bool:
+        thread = self._task_threads.get(task_name)
+        return bool(thread and thread.is_alive())
+
+    def _task_label(self, task_name: str) -> str:
+        if task_name == "local_folder":
+            return "Watched folder run"
+        return "Loom import"

@@ -21,6 +21,11 @@ class LoomClient:
     email: str | None = None
     password: str | None = None
     headless: bool = True
+    chrome_binary: str | None = None
+    chromedriver_path: str | None = None
+    chrome_user_data_dir: str | None = None
+    chrome_window_size: str = "1600,1200"
+    chrome_extra_args: str = ""
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str = "gpt-4.1-mini"

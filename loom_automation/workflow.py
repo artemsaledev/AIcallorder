@@ -58,6 +58,11 @@ class AutomationWorkflow:
                 loom_email=getattr(self.loom_client, "email", None),
                 loom_password=getattr(self.loom_client, "password", None),
                 headless=getattr(self.loom_client, "headless", True),
+                chrome_binary=getattr(self.loom_client, "chrome_binary", None),
+                chromedriver_path=getattr(self.loom_client, "chromedriver_path", None),
+                chrome_user_data_dir=getattr(self.loom_client, "chrome_user_data_dir", None),
+                chrome_window_size=getattr(self.loom_client, "chrome_window_size", "1600,1200"),
+                chrome_extra_args=getattr(self.loom_client, "chrome_extra_args", ""),
             ),
             transcriber=Transcriber(
                 openai_api_key=getattr(self.loom_client, "openai_api_key", None),

@@ -35,6 +35,11 @@ workflow = AutomationWorkflow(
         email=settings.loom_email,
         password=settings.loom_password,
         headless=settings.loom_headless,
+        chrome_binary=settings.chrome_binary,
+        chromedriver_path=settings.chromedriver_path,
+        chrome_user_data_dir=settings.chrome_user_data_dir,
+        chrome_window_size=settings.chrome_window_size,
+        chrome_extra_args=settings.chrome_extra_args,
         openai_api_key=settings.openai_api_key,
         openai_base_url=settings.openai_base_url,
         openai_model=settings.openai_model,
@@ -1058,9 +1063,11 @@ def ui_scheduler(
 def ui_run_scheduler_local() -> str:
     result = scheduler.run_local_folder_now()
     pretty = html.escape(json.dumps(result, ensure_ascii=False, indent=2))
+    note = "Задача ставится в фон и страница больше не ждёт полный импорт." if result.get("background") else "Результат запуска показан ниже."
     body = f"""
     <div class="card">
       <h1>Watched Folder Run</h1>
+      <p>{html.escape(note)}</p>
       <div class="toolbar">
         <a class="button" href="/">Back To Dashboard</a>
       </div>
@@ -1074,9 +1081,11 @@ def ui_run_scheduler_local() -> str:
 def ui_run_scheduler_loom() -> str:
     result = scheduler.run_loom_now()
     pretty = html.escape(json.dumps(result, ensure_ascii=False, indent=2))
+    note = "Loom import поставлен в фон. Сайт сразу отвечает, а статус можно смотреть на dashboard и в run logs." if result.get("background") else "Результат запуска показан ниже."
     body = f"""
     <div class="card">
       <h1>Loom Import Run</h1>
+      <p>{html.escape(note)}</p>
       <div class="toolbar">
         <a class="button" href="/">Back To Dashboard</a>
       </div>

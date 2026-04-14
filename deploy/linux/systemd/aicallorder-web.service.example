@@ -1,0 +1,21 @@
+[Unit]
+Description=AIcallorder web application
+Wants=network-online.target
+After=network-online.target aicallorder-xvfb.service
+Requires=aicallorder-xvfb.service
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USER
+Group=YOUR_LINUX_USER
+WorkingDirectory=/opt/aicallorder
+Environment=DISPLAY=:99
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/aicallorder/.env
+ExecStart=/opt/aicallorder/.venv/bin/python -m uvicorn loom_automation.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

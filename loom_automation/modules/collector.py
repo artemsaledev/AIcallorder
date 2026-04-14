@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+import logging
 import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
+import time
 from typing import List, Optional
 from urllib.parse import urlparse
 
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchWindowException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -22,6 +26,8 @@ from pydantic import BaseModel, Field
 
 from loom_automation.models import MeetingMetadata
 from loom_automation.prompt_routing import title_matches_keywords
+
+logger = logging.getLogger(__name__)
 
 
 class CollectedVideo(BaseModel):
@@ -45,6 +51,11 @@ class LoomCollector:
     loom_email: str | None = None
     loom_password: str | None = None
     headless: bool = True
+    chrome_binary: str | None = None
+    chromedriver_path: str | None = None
+    chrome_user_data_dir: str | None = None
+    chrome_window_size: str = "1600,1200"
+    chrome_extra_args: str = ""
 
     def collect_from_manual_input(
         self,
@@ -155,7 +166,11 @@ class LoomCollector:
                 if video_id in known_video_ids or link in known_urls:
                     continue
 
-                transcript_text, title = self._extract_transcript(driver, wait, link)
+                try:
+                    transcript_text, title = self._extract_transcript(driver, wait, link)
+                except Exception as exc:
+                    logger.warning("Skipping Loom video %s after transcript extraction error: %s", link, exc)
+                    continue
                 if not transcript_text:
                     continue
                 resolved_title = title or video_id
@@ -184,21 +199,116 @@ class LoomCollector:
 
             return results
         finally:
-            driver.quit()
+            self._dispose_driver(driver)
 
     def _create_driver(self):
+        last_error: Exception | None = None
+        for attempt in range(2):
+            profile_dir, should_cleanup = self._resolve_profile_dir()
+            try:
+                options = self._build_chrome_options(profile_dir)
+                service = Service(self._resolve_chromedriver_path())
+                driver = webdriver.Chrome(service=service, options=options)
+                setattr(driver, "_aicallorder_profile_dir", profile_dir)
+                setattr(driver, "_aicallorder_cleanup_profile_dir", should_cleanup)
+                return driver
+            except Exception as exc:
+                last_error = exc
+                if should_cleanup:
+                    self._cleanup_profile_dir(profile_dir)
+                if attempt == 0 and self._is_retryable_startup_error(exc):
+                    logger.warning("Retrying Chrome startup after transient browser failure: %s", exc)
+                    time.sleep(1)
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Chrome driver failed to start.")
+
+    def _build_chrome_options(self, profile_dir: str) -> Options:
         options = Options()
         if self.headless:
             options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-sandbox")
-        options.add_argument("--window-size=1600,1200")
+        options.add_argument(f"--window-size={self.chrome_window_size or '1600,1200'}")
+        options.add_argument("--remote-debugging-port=0")
+        options.add_argument(f"--user-data-dir={profile_dir}")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--lang=en-US")
+        options.add_experimental_option(
+            "prefs",
+            {
+                "credentials_enable_service": False,
+                "profile.password_manager_enabled": False,
+                "profile.default_content_setting_values.notifications": 2,
+            },
+        )
         browser_binary = self._detect_browser_binary()
         if browser_binary:
             options.binary_location = browser_binary
-        service = Service(ChromeDriverManager().install())
-        return webdriver.Chrome(service=service, options=options)
+        for extra_arg in self._parse_extra_args():
+            options.add_argument(extra_arg)
+        return options
+
+    def _resolve_chromedriver_path(self) -> str:
+        explicit_driver = self.chromedriver_path or os.environ.get("CHROMEDRIVER_PATH")
+        if explicit_driver and os.path.exists(explicit_driver):
+            return explicit_driver
+
+        candidates = [
+            r"C:\WebDriver\bin\chromedriver.exe",
+            r"C:\Program Files\ChromeDriver\chromedriver.exe",
+            "/usr/local/bin/chromedriver",
+            "/usr/bin/chromedriver",
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+
+        resolved = shutil.which("chromedriver")
+        if resolved:
+            return resolved
+
+        return ChromeDriverManager().install()
+
+    def _dispose_driver(self, driver) -> None:
+        profile_dir = getattr(driver, "_aicallorder_profile_dir", None)
+        should_cleanup = bool(getattr(driver, "_aicallorder_cleanup_profile_dir", False))
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        if should_cleanup:
+            self._cleanup_profile_dir(profile_dir)
+
+    def _cleanup_profile_dir(self, profile_dir: str | None) -> None:
+        if not profile_dir:
+            return
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _is_retryable_startup_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "devtoolsactiveport",
+                "chrome failed to start",
+                "session not created",
+                "target window already closed",
+            )
+        )
 
     def _login(self, driver, wait: WebDriverWait) -> None:
         driver.get("https://www.loom.com/login")
@@ -219,9 +329,9 @@ class LoomCollector:
         if continue_with_atlassian is not None:
             driver.execute_script("arguments[0].click();", continue_with_atlassian)
 
-        wait.until(lambda d: "atlassian.com" in d.current_url or "loom.com" in d.current_url)
+        self._wait_for_known_login_context(driver, timeout_seconds=30)
 
-        if "atlassian.com" in driver.current_url:
+        if "atlassian.com" in self._safe_current_url(driver):
             username_input = wait.until(EC.presence_of_element_located((By.NAME, "username")))
             current_username = (username_input.get_attribute("value") or "").strip()
             if not current_username:
@@ -258,16 +368,11 @@ class LoomCollector:
                 self._set_input_value(driver, password_input, self.loom_password)
             self._submit_current_form(driver, wait)
 
-        stable_wait = WebDriverWait(driver, 60)
         try:
-            stable_wait.until(
-                lambda d: "loom.com" in d.current_url and ("library" in d.current_url or "videos" in d.current_url)
-            )
+            self._wait_for_library_page(driver, timeout_seconds=45)
         except Exception:
             driver.get(self._normalize_library_url())
-            stable_wait.until(
-                lambda d: "loom.com" in d.current_url and ("library" in d.current_url or "videos" in d.current_url)
-            )
+            self._wait_for_library_page(driver, timeout_seconds=45)
 
     def _extract_library_links(
         self,
@@ -278,9 +383,7 @@ class LoomCollector:
         search_results_limit: int = 10,
     ) -> list[str]:
         driver.get(self._normalize_library_url())
-        wait.until(
-            lambda d: "/looms/videos" in d.current_url and "Videos" in d.title
-        )
+        wait.until(lambda d: self._is_library_url(self._safe_current_url(d)) and "Videos" in d.title)
         try:
             wait.until(
                 lambda d: len(
@@ -641,7 +744,7 @@ class LoomCollector:
         return query or None
 
     def _detect_browser_binary(self) -> str | None:
-        explicit_binary = os.environ.get("CHROME_BINARY") or os.environ.get("BROWSER_BINARY")
+        explicit_binary = self.chrome_binary or os.environ.get("CHROME_BINARY") or os.environ.get("BROWSER_BINARY")
         if explicit_binary and os.path.exists(explicit_binary):
             return explicit_binary
 
@@ -673,24 +776,65 @@ class LoomCollector:
 
     def _submit_current_form(self, driver, wait: WebDriverWait) -> None:
         selectors = [
-            (By.XPATH, "//button[contains(., 'Войти')]"),
-            (By.XPATH, "//button[contains(., 'Продолжить')]"),
+            (By.CSS_SELECTOR, "button#login-submit"),
+            (By.CSS_SELECTOR, "button[type='submit']"),
+            (By.CSS_SELECTOR, "input[type='submit']"),
             (By.XPATH, "//button[contains(., 'Continue')]"),
-            (By.XPATH, "//button[@type='submit']"),
+            (By.XPATH, "//button[contains(., 'Продолжить')]"),
+            (By.XPATH, "//button[contains(., 'Войти')]"),
         ]
+        self._switch_to_latest_window(driver)
         for by, selector in selectors:
             try:
-                button = wait.until(EC.element_to_be_clickable((by, selector)))
-                driver.execute_script("arguments[0].click();", button)
-                return
+                candidates = driver.find_elements(by, selector)
             except Exception:
-                continue
+                candidates = []
+            for button in candidates:
+                try:
+                    if not button.is_displayed():
+                        continue
+                    driver.execute_script("arguments[0].click();", button)
+                    return
+                except Exception:
+                    continue
 
-        active = driver.switch_to.active_element
         try:
+            self._switch_to_latest_window(driver)
+            active = driver.switch_to.active_element
             active.send_keys(Keys.RETURN)
+            return
         except Exception:
-            pass
+            submitted = False
+            try:
+                submitted = bool(
+                    driver.execute_script(
+                        """
+                        const active = document.activeElement;
+                        if (active && active.form) {
+                          if (active.form.requestSubmit) {
+                            active.form.requestSubmit();
+                          } else {
+                            active.form.submit();
+                          }
+                          return true;
+                        }
+                        const form = document.querySelector('form');
+                        if (!form) {
+                          return false;
+                        }
+                        if (form.requestSubmit) {
+                          form.requestSubmit();
+                        } else {
+                          form.submit();
+                        }
+                        return true;
+                        """
+                    )
+                )
+            except Exception:
+                submitted = False
+            if not submitted:
+                raise TimeoutException("Could not submit the current Loom login form.")
 
     def _set_input_value(self, driver, element, value: str) -> None:
         driver.execute_script(
@@ -705,3 +849,75 @@ class LoomCollector:
             element,
             value,
         )
+
+    def _wait_for_known_login_context(self, driver, timeout_seconds: int = 30) -> str:
+        deadline = time.time() + timeout_seconds
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self._switch_to_latest_window(driver)
+                current_url = self._safe_current_url(driver)
+                if "atlassian.com" in current_url or "loom.com" in current_url:
+                    return current_url
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.5)
+        if last_error:
+            raise last_error
+        raise TimeoutException("Timed out while waiting for Loom/Atlassian login page.")
+
+    def _wait_for_library_page(self, driver, timeout_seconds: int = 45) -> str:
+        deadline = time.time() + timeout_seconds
+        last_url = ""
+        while time.time() < deadline:
+            current_url = self._safe_current_url(driver)
+            last_url = current_url
+            if self._is_library_url(current_url):
+                return current_url
+            time.sleep(1)
+        raise TimeoutException(f"Timed out while waiting for Loom library page. Last URL: {last_url}")
+
+    def _switch_to_latest_window(self, driver) -> None:
+        try:
+            handles = driver.window_handles
+        except WebDriverException as exc:
+            raise NoSuchWindowException(str(exc)) from exc
+        if not handles:
+            raise NoSuchWindowException("Chrome window is no longer available.")
+        try:
+            current_handle = driver.current_window_handle
+        except WebDriverException:
+            current_handle = None
+        if current_handle not in handles:
+            driver.switch_to.window(handles[-1])
+
+    def _safe_current_url(self, driver) -> str:
+        self._switch_to_latest_window(driver)
+        try:
+            return driver.current_url or ""
+        except WebDriverException:
+            return ""
+
+    def _is_library_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        if "loom.com" not in (parsed.netloc or ""):
+            return False
+        path = (parsed.path or "").rstrip("/").lower()
+        return path in {"/library", "/looms/videos"}
+
+    def _resolve_profile_dir(self) -> tuple[str, bool]:
+        configured_dir = self.chrome_user_data_dir or os.environ.get("CHROME_USER_DATA_DIR")
+        if configured_dir:
+            path = Path(configured_dir).expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            return str(path), False
+        return tempfile.mkdtemp(prefix="aicallorder-chrome-profile-"), True
+
+    def _parse_extra_args(self) -> list[str]:
+        raw_value = self.chrome_extra_args or ""
+        if not raw_value.strip():
+            return []
+        return [item.strip() for item in raw_value.replace("\n", ",").split(",") if item.strip()]
