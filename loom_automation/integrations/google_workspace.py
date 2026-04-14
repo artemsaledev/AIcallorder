@@ -28,6 +28,7 @@ class GoogleWorkspacePublisher:
     service_account_json: str | None = None
     docs_folder_id: str | None = None
     doc_id: str | None = None
+    transcript_doc_id: str | None = None
     sheets_id: str | None = None
     worksheet_name: str = "Transcript"
 
@@ -36,10 +37,23 @@ class GoogleWorkspacePublisher:
             return f"https://docs.google.com/document/d/{self.doc_id}/edit"
         return None
 
+    def current_transcript_doc_url(self) -> str | None:
+        if self.transcript_doc_id:
+            return f"https://docs.google.com/document/d/{self.transcript_doc_id}/edit"
+        return None
+
     def section_title(self, meeting: MeetingMetadata) -> str:
         return f"Meeting Note: {meeting.title}"
 
-    def publish_meeting_artifacts(self, meeting: MeetingMetadata, artifacts: MeetingArtifacts) -> dict:
+    def transcript_section_title(self, meeting: MeetingMetadata) -> str:
+        return f"Transcript: {meeting.title}"
+
+    def publish_meeting_artifacts(
+        self,
+        meeting: MeetingMetadata,
+        artifacts: MeetingArtifacts,
+        transcript_text: str,
+    ) -> dict:
         if not self.service_account_json:
             return self._result(note="GOOGLE_SERVICE_ACCOUNT_JSON is not configured.")
 
@@ -48,7 +62,11 @@ class GoogleWorkspacePublisher:
             return self._result(note=f"Service account JSON not found: {service_account_path}")
 
         result = self._result(note="Google publication completed.")
-        doc_url = self._upsert_google_doc(meeting, artifacts)
+        transcript_doc_url = self._upsert_transcript_doc(meeting, transcript_text)
+        if transcript_doc_url:
+            result["transcript_doc_url"] = transcript_doc_url
+
+        doc_url = self._upsert_google_doc(meeting, artifacts, transcript_doc_url)
         if doc_url:
             result["google_doc_url"] = doc_url
 
@@ -73,7 +91,12 @@ class GoogleWorkspacePublisher:
 
         return result
 
-    def _upsert_google_doc(self, meeting: MeetingMetadata, artifacts: MeetingArtifacts) -> str | None:
+    def _upsert_google_doc(
+        self,
+        meeting: MeetingMetadata,
+        artifacts: MeetingArtifacts,
+        transcript_doc_url: str | None = None,
+    ) -> str | None:
         if not self.docs_folder_id and not self.doc_id:
             return None
 
@@ -82,11 +105,17 @@ class GoogleWorkspacePublisher:
         drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         title = self._doc_title(meeting)
-        body_text = self._render_doc_text(meeting, artifacts)
+        body_text = self._render_doc_text(meeting, artifacts, transcript_doc_url=transcript_doc_url)
 
         try:
             if self.doc_id:
-                self._upsert_master_doc_section(docs, self.doc_id, meeting, artifacts)
+                self._upsert_master_doc_section(
+                    docs,
+                    self.doc_id,
+                    meeting,
+                    artifacts,
+                    transcript_doc_url=transcript_doc_url,
+                )
                 file_id = self.doc_id
             else:
                 file_id = self._find_existing_doc_id(drive, title, self.docs_folder_id)
@@ -121,12 +150,19 @@ class GoogleWorkspacePublisher:
 
         return f"https://docs.google.com/document/d/{file_id}/edit"
 
-    def _upsert_master_doc_section(self, docs, doc_id: str, meeting: MeetingMetadata, artifacts: MeetingArtifacts) -> None:
+    def _upsert_master_doc_section(
+        self,
+        docs,
+        doc_id: str,
+        meeting: MeetingMetadata,
+        artifacts: MeetingArtifacts,
+        transcript_doc_url: str | None = None,
+    ) -> None:
         marker_start = f"[[LOOM_VIDEO_ID:{meeting.loom_video_id}]]"
         marker_end = f"[[/LOOM_VIDEO_ID:{meeting.loom_video_id}]]"
         section_text = (
             f"{marker_start}\n"
-            f"{self._render_doc_text(meeting, artifacts)}"
+            f"{self._render_doc_text(meeting, artifacts, transcript_doc_url=transcript_doc_url)}"
             f"{marker_end}\n\n"
         )
         doc = docs.documents().get(documentId=doc_id).execute()
@@ -150,6 +186,55 @@ class GoogleWorkspacePublisher:
             insert_index = max(1, end_index - 1)
             requests.append({"insertText": {"location": {"index": insert_index}, "text": section_text}})
         docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
+    def _upsert_transcript_doc(self, meeting: MeetingMetadata, transcript_text: str) -> str | None:
+        if not self.transcript_doc_id:
+            return None
+
+        creds = Credentials.from_service_account_file(str(self.service_account_json), scopes=DOC_SCOPES)
+        docs = build("docs", "v1", credentials=creds, cache_discovery=False)
+
+        section_title = self.transcript_section_title(meeting)
+        marker_start = f"[[TRANSCRIPT_LOOM_VIDEO_ID:{meeting.loom_video_id}]]"
+        marker_end = f"[[/TRANSCRIPT_LOOM_VIDEO_ID:{meeting.loom_video_id}]]"
+        transcript_section = (
+            f"{marker_start}\n"
+            f"{section_title}\n\n"
+            f"Metadata\n"
+            f"- Loom video ID: {meeting.loom_video_id}\n"
+            f"- Recorded at: {meeting.recorded_at.isoformat() if meeting.recorded_at else '-'}\n"
+            f"- Source URL: {meeting.source_url}\n\n"
+            f"Processed Transcript\n"
+            f"{transcript_text.strip()}\n"
+            f"{marker_end}\n\n"
+        )
+
+        try:
+            doc = docs.documents().get(documentId=self.transcript_doc_id).execute()
+            start_range = self._find_text_range(doc, marker_start)
+            end_range = self._find_text_range(doc, marker_end)
+            requests = []
+            if start_range and end_range:
+                requests.append(
+                    {
+                        "deleteContentRange": {
+                            "range": {
+                                "startIndex": start_range[0],
+                                "endIndex": end_range[1],
+                            }
+                        }
+                    }
+                )
+                requests.append({"insertText": {"location": {"index": start_range[0]}, "text": transcript_section}})
+            else:
+                end_index = doc.get("body", {}).get("content", [{}])[-1].get("endIndex", 1)
+                insert_index = max(1, end_index - 1)
+                requests.append({"insertText": {"location": {"index": insert_index}, "text": transcript_section}})
+            docs.documents().batchUpdate(documentId=self.transcript_doc_id, body={"requests": requests}).execute()
+        except HttpError as exc:
+            return f"google-transcript-doc-error:{exc.status_code}"
+
+        return self.current_transcript_doc_url()
 
     def _upsert_google_sheet_row(
         self,
@@ -277,7 +362,12 @@ class GoogleWorkspacePublisher:
         end = index_map[pos + len(needle) - 1] + 1
         return start, end
 
-    def _render_doc_text(self, meeting: MeetingMetadata, artifacts: MeetingArtifacts) -> str:
+    def _render_doc_text(
+        self,
+        meeting: MeetingMetadata,
+        artifacts: MeetingArtifacts,
+        transcript_doc_url: str | None = None,
+    ) -> str:
         business_requests = [
             (
                 f"{item.title}\n"
@@ -305,6 +395,9 @@ class GoogleWorkspacePublisher:
             f"- Meeting type: {meeting.meeting_type}",
             f"- Recorded at: {meeting.recorded_at.isoformat() if meeting.recorded_at else '-'}",
             f"- Source URL: {meeting.source_url}",
+            f"- Summary Doc: {self.current_doc_url() or '-'}",
+            f"- Transcript Doc: {transcript_doc_url or self.current_transcript_doc_url() or '-'}",
+            f"- Transcript section: {self.transcript_section_title(meeting) if (transcript_doc_url or self.current_transcript_doc_url()) else '-'}",
             "",
             "Summary",
             artifacts.summary,
@@ -374,6 +467,7 @@ class GoogleWorkspacePublisher:
     def _result(self, note: str) -> dict:
         return {
             "google_doc_url": None,
+            "transcript_doc_url": None,
             "google_sheet_row": None,
             "note": note,
         }

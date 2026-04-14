@@ -259,6 +259,7 @@ class AutomationWorkflow:
                     "loom_video_id": loom_video_id,
                     "title": title,
                     "source_url": source_url,
+                    "transcript_section_title": f"Transcript: {title}",
                     "artifacts": json.loads(artifacts_json),
                 }
             )
@@ -277,6 +278,7 @@ class AutomationWorkflow:
             digest.telegram_digest,
             items=payload,
             google_doc_url=self.google_publisher.current_doc_url(),
+            transcript_doc_url=self.google_publisher.current_transcript_doc_url(),
         )
 
         try:

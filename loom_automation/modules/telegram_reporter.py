@@ -59,6 +59,8 @@ class TelegramReporter:
         meeting: MeetingMetadata,
         google_doc_url: str | None = None,
         doc_section_title: str | None = None,
+        transcript_doc_url: str | None = None,
+        transcript_section_title: str | None = None,
     ) -> str:
         lines = [text.rstrip()]
         lines.extend(
@@ -72,6 +74,10 @@ class TelegramReporter:
             lines.append(f"Google Doc: {google_doc_url}")
         if doc_section_title:
             lines.append(f"Doc section: {doc_section_title}")
+        if transcript_doc_url:
+            lines.append(f"Transcript Doc: {transcript_doc_url}")
+        if transcript_section_title:
+            lines.append(f"Transcript section: {transcript_section_title}")
         return "\n".join(line for line in lines if line is not None).strip()
 
     def append_daily_links(
@@ -80,18 +86,24 @@ class TelegramReporter:
         *,
         items: list[dict],
         google_doc_url: str | None = None,
+        transcript_doc_url: str | None = None,
     ) -> str:
         lines = [text.rstrip()]
         if google_doc_url:
             lines.extend(["", f"Google Doc: {google_doc_url}"])
+        if transcript_doc_url:
+            lines.append(f"Transcript Doc: {transcript_doc_url}")
         if items:
             lines.extend(["", "Meeting links"])
             for item in items[:8]:
                 title = item.get("title", "Untitled")
                 source_url = item.get("source_url", "")
+                transcript_section_title = item.get("transcript_section_title", f"Transcript: {title}")
                 lines.append(f"- {title}")
                 if source_url:
                     lines.append(f"  Loom: {source_url}")
                 if google_doc_url:
                     lines.append(f"  Doc section: Meeting Note: {title}")
+                if transcript_doc_url:
+                    lines.append(f"  Transcript section: {transcript_section_title}")
         return "\n".join(line for line in lines if line is not None).strip()

@@ -52,6 +52,7 @@ workflow = AutomationWorkflow(
         service_account_json=settings.google_service_account_json,
         docs_folder_id=settings.google_docs_folder_id,
         doc_id=settings.google_doc_id,
+        transcript_doc_id=settings.google_transcript_doc_id,
         sheets_id=settings.google_sheets_id,
         worksheet_name=settings.google_sheets_worksheet,
     ),

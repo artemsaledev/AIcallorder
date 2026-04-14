@@ -43,12 +43,14 @@ class DiscordLoomPipeline:
         self.storage.upsert_meeting(meeting, transcript_text)
         self.storage.save_artifacts(meeting.loom_video_id, artifacts)
 
-        google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts)
+        google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, transcript_text)
         artifacts.telegram_digest = self.telegram_reporter.append_meeting_links(
             artifacts.telegram_digest,
             meeting=meeting,
             google_doc_url=google_result.get("google_doc_url") or self.google_publisher.current_doc_url(),
             doc_section_title=self.google_publisher.section_title(meeting),
+            transcript_doc_url=google_result.get("transcript_doc_url") or self.google_publisher.current_transcript_doc_url(),
+            transcript_section_title=self.google_publisher.transcript_section_title(meeting),
         )
         telegram_result = self.telegram_notifier.send_digest(artifacts.telegram_digest)
 
@@ -138,12 +140,14 @@ class DiscordLoomPipeline:
             self.storage.upsert_meeting(meeting, transcript_text)
             self.storage.save_artifacts(meeting.loom_video_id, artifacts)
 
-            google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts)
+            google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, transcript_text)
             artifacts.telegram_digest = self.telegram_reporter.append_meeting_links(
                 artifacts.telegram_digest,
                 meeting=meeting,
                 google_doc_url=google_result.get("google_doc_url") or self.google_publisher.current_doc_url(),
                 doc_section_title=self.google_publisher.section_title(meeting),
+                transcript_doc_url=google_result.get("transcript_doc_url") or self.google_publisher.current_transcript_doc_url(),
+                transcript_section_title=self.google_publisher.transcript_section_title(meeting),
             )
             telegram_result = self.telegram_notifier.send_digest(artifacts.telegram_digest)
             results.append(

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     google_service_account_json: Optional[str] = Field(default=None, alias="GOOGLE_SERVICE_ACCOUNT_JSON")
     google_docs_folder_id: Optional[str] = Field(default=None, alias="GOOGLE_DOCS_FOLDER_ID")
     google_doc_id: Optional[str] = Field(default=None, alias="GOOGLE_DOC_ID")
+    google_transcript_doc_id: Optional[str] = Field(default=None, alias="GOOGLE_TRANSCRIPT_DOC_ID")
     google_sheets_id: Optional[str] = Field(default=None, alias="GOOGLE_SHEETS_ID")
     google_sheets_worksheet: str = Field(default="Transcript", alias="GOOGLE_SHEETS_WORKSHEET")
 
