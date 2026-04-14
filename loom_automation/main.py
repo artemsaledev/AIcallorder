@@ -5,8 +5,10 @@ from datetime import date
 import html
 import json
 from pathlib import Path
+import shutil
+import tempfile
 
-from fastapi import FastAPI, Form, Header, HTTPException
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 
 from loom_automation.config import get_settings
@@ -581,6 +583,14 @@ def _operations_html(meetings_page: int = 1, runs_page: int = 1) -> str:
     """
 
 
+def _persist_upload(upload: UploadFile, target_dir: Path) -> Path:
+    filename = Path(upload.filename or "uploaded-file").name or "uploaded-file"
+    target_path = target_dir / filename
+    with target_path.open("wb") as destination:
+        shutil.copyfileobj(upload.file, destination)
+    return target_path
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(meetings_page: int = 1, runs_page: int = 1) -> str:
     default_folder = html.escape(settings.local_video_folder or "")
@@ -612,7 +622,7 @@ def index(meetings_page: int = 1, runs_page: int = 1) -> str:
       </div>
     </div>
 
-    <form class="card" method="post" action="/ui/process">
+    <form class="card" method="post" action="/ui/process" enctype="multipart/form-data">
       <input type="hidden" id="source_mode" name="source_mode" value="loom" />
 
       <h2>Source</h2>
@@ -711,13 +721,19 @@ def index(meetings_page: int = 1, runs_page: int = 1) -> str:
       <div id="local-file-fields" class="field-group section hidden">
         <label for="local_video_path">Local file path</label>
         <input id="local_video_path" name="local_video_path" placeholder="C:\\Users\\...\\video.mp4" />
-        <div class="hint">Подходит для одного файла встречи или обучающего видео.</div>
+        <div class="hint">Подходит для пути к файлу на том же сервере, где запущено приложение.</div>
+        <label for="local_video_upload">Upload local file</label>
+        <input id="local_video_upload" name="local_video_upload" type="file" accept=".mp4,.mkv,.mov,.webm,.mp3,.wav,.m4a" />
+        <div class="hint">Для VPS-режима удобнее выбрать файл кнопкой. После обработки файл будет удален с сервера автоматически.</div>
       </div>
 
       <div id="local-folder-fields" class="field-group section hidden">
         <label for="folder_path">Local folder path</label>
         <input id="folder_path" name="folder_path" value="{default_folder}" placeholder="C:\\Users\\...\\Zoom\\meeting-folder" />
-        <div class="hint">Будут обработаны все файлы с поддерживаемыми расширениями внутри папки.</div>
+        <div class="hint">Подходит для папки на том же сервере. Для веб-загрузки можно выбрать сразу несколько файлов ниже.</div>
+        <label for="folder_uploads">Upload multiple files</label>
+        <input id="folder_uploads" name="folder_uploads" type="file" accept=".mp4,.mkv,.mov,.webm,.mp3,.wav,.m4a" multiple />
+        <div class="hint">Загруженные файлы будут помещены во временную папку только на время обработки и затем удалены.</div>
       </div>
 
       <div class="toolbar">
@@ -906,6 +922,8 @@ def ui_process(
     transcript_text: str = Form(""),
     local_video_path: str = Form(""),
     folder_path: str = Form(""),
+    local_video_upload: UploadFile | None = File(default=None),
+    folder_uploads: list[UploadFile] | None = File(default=None),
 ) -> str:
     parsed_llm_provider = llm_provider.strip().lower() or "auto"
     preprocess_enabled = transcript_preprocess_enabled.strip().lower() == "true"
@@ -913,44 +931,71 @@ def ui_process(
     exclude_keywords = [item.strip() for item in loom_title_exclude_keywords.replace(";", ",").split(",") if item.strip()]
     recorded_date_from = loom_recorded_date_from.strip() or None
     recorded_date_to = loom_recorded_date_to.strip() or None
-    if source_mode == "loom-auto":
-        result = workflow.import_latest_loom(
-            LoomImportRequest(
-                limit=max(1, int(loom_limit or "5")),
-                meeting_type=meeting_type,
-                llm_provider=parsed_llm_provider,
-                transcript_preprocess_enabled=preprocess_enabled,
-                primary_text_query=loom_primary_text_query.strip() or None,
-                primary_date_query=loom_primary_date_query.strip() or None,
-                search_results_limit=max(1, int(loom_search_results_limit or "8")),
-                title_include_keywords=include_keywords,
-                title_exclude_keywords=exclude_keywords,
-                recorded_date_from=recorded_date_from,
-                recorded_date_to=recorded_date_to,
+
+    temp_dir_handle = tempfile.TemporaryDirectory(prefix="aicallorder-upload-")
+    temp_dir = Path(temp_dir_handle.name)
+    try:
+        if source_mode == "local-file" and local_video_upload and local_video_upload.filename:
+            uploaded_path = _persist_upload(local_video_upload, temp_dir)
+            local_video_path = str(uploaded_path)
+
+        if source_mode == "local-folder" and folder_uploads:
+            valid_uploads = [upload for upload in folder_uploads if upload and upload.filename]
+            for upload in valid_uploads:
+                _persist_upload(upload, temp_dir)
+            if valid_uploads:
+                folder_path = str(temp_dir)
+
+        if source_mode == "loom-auto":
+            result = workflow.import_latest_loom(
+                LoomImportRequest(
+                    limit=max(1, int(loom_limit or "5")),
+                    meeting_type=meeting_type,
+                    llm_provider=parsed_llm_provider,
+                    transcript_preprocess_enabled=preprocess_enabled,
+                    primary_text_query=loom_primary_text_query.strip() or None,
+                    primary_date_query=loom_primary_date_query.strip() or None,
+                    search_results_limit=max(1, int(loom_search_results_limit or "8")),
+                    title_include_keywords=include_keywords,
+                    title_exclude_keywords=exclude_keywords,
+                    recorded_date_from=recorded_date_from,
+                    recorded_date_to=recorded_date_to,
+                )
             )
-        )
-    elif source_mode == "local-folder":
-        result = workflow.process_folder(
-            ProcessFolderRequest(
-                folder_path=folder_path,
-                meeting_type=meeting_type,
-                llm_provider=parsed_llm_provider,
-                transcript_preprocess_enabled=preprocess_enabled,
+        elif source_mode == "local-folder":
+            result = workflow.process_folder(
+                ProcessFolderRequest(
+                    folder_path=folder_path,
+                    meeting_type=meeting_type,
+                    llm_provider=parsed_llm_provider,
+                    transcript_preprocess_enabled=preprocess_enabled,
+                )
             )
-        )
-    else:
-        result = workflow.process_meeting(
-            ProcessMeetingRequest(
-                collector_source=source_mode,
-                loom_url=loom_url or None,
-                transcript_text=transcript_text or None,
-                local_video_path=local_video_path or None,
-                title=title,
-                meeting_type=meeting_type,
-                llm_provider=parsed_llm_provider,
-                transcript_preprocess_enabled=preprocess_enabled,
+        else:
+            result = workflow.process_meeting(
+                ProcessMeetingRequest(
+                    collector_source=source_mode,
+                    loom_url=loom_url or None,
+                    transcript_text=transcript_text or None,
+                    local_video_path=local_video_path or None,
+                    title=title,
+                    meeting_type=meeting_type,
+                    llm_provider=parsed_llm_provider,
+                    transcript_preprocess_enabled=preprocess_enabled,
+                )
             )
-        )
+    finally:
+        try:
+            if local_video_upload:
+                local_video_upload.file.close()
+        except Exception:
+            pass
+        for upload in folder_uploads or []:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+        temp_dir_handle.cleanup()
 
     pretty = html.escape(json.dumps(result, ensure_ascii=False, indent=2))
     body = f"""
