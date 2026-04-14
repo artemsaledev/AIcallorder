@@ -269,14 +269,16 @@ class LoomCollector:
             r"C:\Program Files\ChromeDriver\chromedriver.exe",
             "/usr/local/bin/chromedriver",
             "/usr/bin/chromedriver",
+            "/snap/bin/chromium.chromedriver",
         ]
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
 
-        resolved = shutil.which("chromedriver")
-        if resolved:
-            return resolved
+        for command_name in ("chromedriver", "chromium.chromedriver"):
+            resolved = shutil.which(command_name)
+            if resolved:
+                return resolved
 
         return ChromeDriverManager().install()
 
@@ -875,7 +877,14 @@ class LoomCollector:
             if self._is_library_url(current_url):
                 return current_url
             time.sleep(1)
-        raise TimeoutException(f"Timed out while waiting for Loom library page. Last URL: {last_url}")
+        title = self._safe_page_title(driver)
+        diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-library-timeout")
+        message = f"Timed out while waiting for Loom library page. Last URL: {last_url}"
+        if title:
+            message += f" | Last title: {title}"
+        if diagnostics:
+            message += f" | Diagnostics: {diagnostics}"
+        raise TimeoutException(message)
 
     def _switch_to_latest_window(self, driver) -> None:
         try:
@@ -897,6 +906,41 @@ class LoomCollector:
             return driver.current_url or ""
         except WebDriverException:
             return ""
+
+    def _safe_page_title(self, driver) -> str:
+        self._switch_to_latest_window(driver)
+        try:
+            return driver.title or ""
+        except WebDriverException:
+            return ""
+
+    def _capture_browser_diagnostics(self, driver, *, prefix: str) -> str:
+        diagnostics_dir = Path("data") / "runtime" / "logs"
+        try:
+            diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return ""
+
+        stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        html_path = diagnostics_dir / f"{prefix}-{stamp}.html"
+        png_path = diagnostics_dir / f"{prefix}-{stamp}.png"
+        written: list[str] = []
+
+        try:
+            self._switch_to_latest_window(driver)
+            html_path.write_text(driver.page_source or "", encoding="utf-8")
+            written.append(str(html_path))
+        except Exception:
+            pass
+
+        try:
+            self._switch_to_latest_window(driver)
+            if driver.save_screenshot(str(png_path)):
+                written.append(str(png_path))
+        except Exception:
+            pass
+
+        return ", ".join(written)
 
     def _is_library_url(self, url: str) -> bool:
         try:
