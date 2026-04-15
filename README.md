@@ -23,6 +23,8 @@ The project is designed around a practical workflow:
 For repository presentation assets and ready-to-paste GitHub metadata, see:
 
 - `docs/GITHUB_SHOWCASE.md`
+- `docs/PROJECT_CONTEXT.md`
+- `docs/OPERATIONS_RUNBOOK.md`
 - `docs/RELEASE_TEMPLATE.md`
 - `assets/social-preview.svg`
 
@@ -65,6 +67,20 @@ flowchart LR
     E --> H["Telegram digest"]
     F --> I["Scheduler + Operations UI"]
 ```
+
+## Production Snapshot
+
+Current public deployment:
+
+- app URL: `https://app.artemai.uk`
+- reverse proxy: `nginx`
+- app service: `aicallorder.service`
+- virtual display: `aicallorder-xvfb.service`
+- service user: `deploy`
+- app directory: `/opt/AIcallorder`
+- persistent browser profile: `/home/deploy/snap/chromium/common/aicallorder-profile`
+
+This matters for Loom stability: Linux production intentionally runs a persistent non-headless browser session under `Xvfb`, because that is closer to the working local browser flow than disposable strict headless automation.
 
 ## Web Interface
 
@@ -188,9 +204,8 @@ Recommended Linux production mode for Loom import:
 
 - `LOOM_HEADLESS=false`
 - `Xvfb` virtual display
-- regular Chrome instead of strict headless mode
-- system-installed `chromedriver`
-- persistent Chrome profile via `CHROME_USER_DATA_DIR`
+- persistent browser profile via `CHROME_USER_DATA_DIR`
+- long-lived authenticated Loom / Atlassian session
 
 Server deployment assets are included in:
 
@@ -198,17 +213,38 @@ Server deployment assets are included in:
 - `deploy/linux/install_runtime_ubuntu.sh`
 - `deploy/linux/systemd/aicallorder-xvfb.service.example`
 - `deploy/linux/systemd/aicallorder-web.service.example`
+- `docs/OPERATIONS_RUNBOOK.md`
 
 Useful Linux env values:
 
 ```env
 LOOM_HEADLESS=false
-CHROME_BINARY=/usr/bin/google-chrome
-CHROMEDRIVER_PATH=/usr/local/bin/chromedriver
-CHROME_USER_DATA_DIR=/opt/aicallorder/data/chrome-profile
+CHROME_BINARY=/usr/bin/chromium-browser
+CHROMEDRIVER_PATH=/snap/bin/chromium.chromedriver
+CHROME_USER_DATA_DIR=/home/deploy/snap/chromium/common/aicallorder-profile
 CHROME_WINDOW_SIZE=1600,1200
 CHROME_EXTRA_ARGS=
 ```
+
+If your VPS uses `google-chrome` instead of Chromium, adjust `CHROME_BINARY` and `CHROMEDRIVER_PATH` to match that installation.
+
+## Loom Login on Linux
+
+On Linux VPS the main challenge is preserving a stable authenticated browser session for Loom / Atlassian.
+
+Recommended rules:
+
+- keep `LOOM_HEADLESS=false`
+- keep a persistent `CHROME_USER_DATA_DIR`
+- run the app under the same Linux user that owns that browser profile
+- if Loom / Atlassian asks for email verification or 2FA, complete it once inside that persistent profile
+
+Recent server-side fixes also improve diagnostics:
+
+- background Loom runs return immediately to the web UI
+- timeout diagnostics include page URL, title, and screenshots / HTML snapshots
+- nested Loom folder URLs under `/looms/videos/...` are treated as valid library pages
+- the login blocker detector no longer mistakes a normal Loom library page for a 2FA screen just because the DOM contains generic verification words
 
 ## Temporary Public URL Without VPS
 
@@ -359,6 +395,29 @@ SCHEDULER_ACTIVE_WEEKDAYS=mon,tue,wed,thu,fri
 Scheduler state is stored in:
 
 - `data/scheduler_settings.json`
+
+## Operations and Diagnostics
+
+Useful public endpoints:
+
+- `https://app.artemai.uk/health`
+- `https://app.artemai.uk/scheduler/status`
+- `https://app.artemai.uk/runs/recent?limit=5`
+- `https://app.artemai.uk/records/recent?limit=20`
+
+Useful local server check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Notes:
+
+- production timestamps are UTC
+- processed-state source of truth is local SQLite, not Google Sheets, Telegram, or Docs
+- screenshots and HTML diagnostics for Loom failures are stored in `data/runtime/logs/`
+- operational procedures are documented in `docs/OPERATIONS_RUNBOOK.md`
+- architecture and current decisions are documented in `docs/PROJECT_CONTEXT.md`
 
 ## Processed Records and Run Logs
 
