@@ -60,6 +60,20 @@ class LoomCollectorLoginTests(unittest.TestCase):
         self.assertIsNotNone(blocker)
         self.assertIn("email verification or 2FA challenge", blocker)
 
+    def test_select_transcript_candidate_prefers_real_transcript_block(self) -> None:
+        collector = LoomCollector()
+
+        selected = collector._select_transcript_candidate(
+            [
+                "Transcript\nComments\nShare",
+                "00:01 Artem: Start the sync\n00:14 Team: Confirmed the plan\n00:35 Artem: Next step is Payments.pro handoff",
+                "New video\nNew folder\nUpload date",
+            ]
+        )
+
+        self.assertIn("Payments.pro handoff", selected)
+        self.assertNotIn("New folder", selected)
+
 
 if __name__ == "__main__":
     unittest.main()

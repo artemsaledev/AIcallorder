@@ -715,40 +715,159 @@ class LoomCollector:
         )
 
     def _extract_transcript(self, driver, wait: WebDriverWait, video_url: str) -> tuple[str | None, str | None]:
-        driver.get(video_url)
-        title = driver.title.replace(" | Loom", "").strip() if driver.title else None
+        title: str | None = None
+        try:
+            driver.get(video_url)
+            try:
+                wait.until(lambda d: (d.execute_script("return document.readyState") or "") == "complete")
+            except Exception:
+                pass
 
-        transcript_button = None
+            title = driver.title.replace(" | Loom", "").strip() if driver.title else None
+            blocker = self._detect_login_blocker(driver)
+            if blocker:
+                diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-video-login-blocked")
+                parts = [blocker]
+                if video_url:
+                    parts.append(f"Video URL: {video_url}")
+                if title:
+                    parts.append(f"Last title: {title}")
+                if diagnostics:
+                    parts.append(f"Diagnostics: {diagnostics}")
+                raise TimeoutException(" | ".join(parts))
+
+            transcript_text = self._extract_transcript_text_from_dom(driver)
+            if not transcript_text:
+                transcript_opened = self._open_transcript_panel(driver, wait)
+                if transcript_opened:
+                    try:
+                        wait.until(lambda d: bool(self._extract_transcript_text_from_dom(d)))
+                    except TimeoutException as exc:
+                        diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-transcript-timeout")
+                        parts = ["Transcript panel opened but no transcript content became visible."]
+                        if video_url:
+                            parts.append(f"Video URL: {video_url}")
+                        if title:
+                            parts.append(f"Last title: {title}")
+                        visible_text = self._summarize_visible_text(self._safe_visible_text(driver), limit=500)
+                        if visible_text:
+                            parts.append(f"Visible text: {visible_text}")
+                        if diagnostics:
+                            parts.append(f"Diagnostics: {diagnostics}")
+                        raise TimeoutException(" | ".join(parts)) from exc
+                    transcript_text = self._extract_transcript_text_from_dom(driver)
+
+            cleaned = self._clean_transcript_text(transcript_text)
+            return (cleaned or None), title
+        except TimeoutException:
+            raise
+        except Exception as exc:
+            diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-transcript-error")
+            parts = ["Transcript extraction failed."]
+            if video_url:
+                parts.append(f"Video URL: {video_url}")
+            if title:
+                parts.append(f"Last title: {title}")
+            current_url = self._safe_current_url(driver)
+            if current_url:
+                parts.append(f"Last URL: {current_url}")
+            if diagnostics:
+                parts.append(f"Diagnostics: {diagnostics}")
+            raise RuntimeError(" | ".join(parts)) from exc
+
+    def _open_transcript_panel(self, driver, wait: WebDriverWait) -> bool:
         selectors = [
             (By.XPATH, "//button[@role='tab' and normalize-space()='Transcript']"),
             (By.CSS_SELECTOR, "[data-testid='sidebar-tab-Transcript']"),
+            (By.CSS_SELECTOR, "[data-testid*='Transcript']"),
+            (By.XPATH, "//button[contains(@aria-label, 'Transcript')]"),
             (By.XPATH, "//button[contains(., 'Transcript')]"),
+            (By.XPATH, "//*[@role='tab' and contains(., 'Transcript')]"),
         ]
         for by, selector in selectors:
             try:
-                transcript_button = wait.until(EC.element_to_be_clickable((by, selector)))
-                break
+                elements = wait.until(lambda d: d.find_elements(by, selector))
             except Exception:
                 continue
+            for element in elements:
+                try:
+                    if not element.is_displayed():
+                        continue
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                    driver.execute_script("arguments[0].click();", element)
+                    time.sleep(0.3)
+                    return True
+                except Exception:
+                    continue
+        return False
 
-        if transcript_button is None:
-            return None, title
+    def _extract_transcript_text_from_dom(self, driver) -> str:
+        try:
+            candidates = driver.execute_script(
+                """
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const style = window.getComputedStyle(element);
+                  if (!style) return false;
+                  if (style.display === 'none' || style.visibility === 'hidden') return false;
+                  const rect = element.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                };
 
-        driver.execute_script("arguments[0].click();", transcript_button)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid^='transcript-row-']")))
+                const markerText = (element) => {
+                  const testId = (element.getAttribute('data-testid') || '').toLowerCase();
+                  const aria = (element.getAttribute('aria-label') || '').toLowerCase();
+                  const role = (element.getAttribute('role') || '').toLowerCase();
+                  const classes = typeof element.className === 'string' ? element.className.toLowerCase() : '';
+                  return `${testId} ${aria} ${role} ${classes}`;
+                };
 
-        transcript_text = driver.execute_script(
-            """
-            const rows = Array.from(document.querySelectorAll("[data-testid^='transcript-row-']"));
-            const chunks = rows
-              .map(row => (row.innerText || '').trim())
-              .filter(text => text && text.length > 5);
-            return chunks.join("\\n");
-            """
-        )
+                const transcriptElements = Array.from(document.querySelectorAll('*'))
+                  .filter(element => {
+                    if (!isVisible(element)) return false;
+                    const marker = markerText(element);
+                    if (!marker) return false;
+                    return marker.includes('transcript') || marker.includes('caption');
+                  });
 
-        cleaned = self._clean_transcript_text(transcript_text)
-        return (cleaned or None), title
+                const results = [];
+                const seen = new Set();
+                for (const element of transcriptElements) {
+                  const text = (element.innerText || element.textContent || '').trim();
+                  if (!text || text.length < 20 || text.length > 20000) continue;
+                  const key = text.slice(0, 500);
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  results.push(text);
+                }
+
+                results.sort((left, right) => right.length - left.length);
+                return results.slice(0, 20);
+                """
+            ) or []
+        except Exception:
+            candidates = []
+
+        return self._select_transcript_candidate(candidates)
+
+    def _select_transcript_candidate(self, candidates: list[str]) -> str:
+        best_text = ""
+        best_score = -1
+        for candidate in candidates or []:
+            cleaned = self._clean_transcript_text(candidate)
+            if not cleaned:
+                continue
+            lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+            if not lines:
+                continue
+            timestamp_like = sum(bool(re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", line)) for line in lines)
+            long_lines = sum(len(line) >= 20 for line in lines)
+            speaker_like = sum(bool(re.match(r"^[A-ZА-ЯЁІЇЄ][^:]{0,40}:", line)) for line in lines)
+            score = (long_lines * 3) + len(lines) + (timestamp_like * 5) + (speaker_like * 2)
+            if score > best_score:
+                best_score = score
+                best_text = cleaned
+        return best_text
 
     def _parse_video_id(self, source_url: str) -> str:
         parsed = urlparse(source_url)
@@ -762,11 +881,29 @@ class LoomCollector:
             return ""
         lines = [line.strip() for line in text.splitlines()]
         filtered = []
+        ignored_lines = {
+            "transcript",
+            "download",
+            "comments",
+            "comment",
+            "share",
+            "copy link",
+            "reaction",
+            "reactions",
+            "add comment",
+            "hide transcript",
+            "show transcript",
+            "captions",
+        }
         for line in lines:
             if not line:
                 continue
             lowered = line.lower()
-            if lowered in {"transcript", "download", "comments"}:
+            if lowered in ignored_lines:
+                continue
+            if lowered.startswith("new video"):
+                continue
+            if lowered.startswith("new folder"):
                 continue
             filtered.append(line)
         return "\n".join(filtered).strip()
