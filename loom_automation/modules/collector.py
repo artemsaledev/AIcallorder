@@ -276,7 +276,7 @@ class LoomCollector:
             profile_dir, should_cleanup = self._resolve_profile_dir()
             try:
                 options = self._build_chrome_options(profile_dir)
-                service = Service(self._resolve_chromedriver_path())
+                service = Service(self._resolve_chromedriver_path(), env=self._build_service_env())
                 driver = webdriver.Chrome(service=service, options=options)
                 setattr(driver, "_aicallorder_profile_dir", profile_dir)
                 setattr(driver, "_aicallorder_cleanup_profile_dir", should_cleanup)
@@ -285,6 +285,8 @@ class LoomCollector:
                 last_error = exc
                 if should_cleanup:
                     self._cleanup_profile_dir(profile_dir)
+                elif self._is_retryable_startup_error(exc):
+                    self._cleanup_browser_startup_artifacts(profile_dir)
                 if attempt == 0 and self._is_retryable_startup_error(exc):
                     logger.warning("Retrying Chrome startup after transient browser failure: %s", exc)
                     time.sleep(1)
@@ -368,6 +370,55 @@ class LoomCollector:
             shutil.rmtree(profile_dir, ignore_errors=True)
         except Exception:
             pass
+
+    def _cleanup_browser_startup_artifacts(self, profile_dir: str | None) -> None:
+        if not profile_dir:
+            return
+        profile_path = Path(profile_dir)
+        if not profile_path.exists():
+            return
+        patterns = [
+            "Singleton*",
+            "DevToolsActivePort",
+            ".org.chromium.Chromium.*",
+        ]
+        for pattern in patterns:
+            for candidate in profile_path.glob(pattern):
+                try:
+                    if candidate.is_dir():
+                        shutil.rmtree(candidate, ignore_errors=True)
+                    else:
+                        candidate.unlink(missing_ok=True)
+                except Exception:
+                    continue
+
+    def _build_service_env(self) -> dict[str, str]:
+        env = {key: str(value) for key, value in os.environ.items() if value is not None}
+        runtime_dir = self._ensure_xdg_runtime_dir()
+        if runtime_dir:
+            env["XDG_RUNTIME_DIR"] = runtime_dir
+        return env
+
+    def _ensure_xdg_runtime_dir(self) -> str | None:
+        configured = os.environ.get("XDG_RUNTIME_DIR")
+        if configured:
+            path = Path(configured).expanduser()
+            if path.exists():
+                return str(path)
+        if os.name != "posix":
+            return None
+        try:
+            uid = os.getuid()
+        except AttributeError:
+            uid = None
+        suffix = str(uid) if uid is not None else "user"
+        runtime_path = Path(tempfile.gettempdir()) / f"aicallorder-xdg-runtime-{suffix}"
+        try:
+            runtime_path.mkdir(parents=True, exist_ok=True)
+            os.chmod(runtime_path, 0o700)
+        except Exception:
+            return str(runtime_path)
+        return str(runtime_path)
 
     def _is_retryable_startup_error(self, exc: Exception) -> bool:
         message = str(exc).lower()
