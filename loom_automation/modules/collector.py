@@ -149,11 +149,13 @@ class LoomCollector:
         driver = self._create_driver()
         wait = WebDriverWait(driver, 20)
         try:
-            try:
-                self._login(driver, wait)
-            except TimeoutException as exc:
-                self._raise_timeout_with_context(driver, exc, stage="Loom login")
             driver.get(self._normalize_library_url())
+            if not self._wait_for_library_url(driver, timeout_seconds=10):
+                try:
+                    self._login(driver, wait)
+                except TimeoutException as exc:
+                    self._raise_timeout_with_context(driver, exc, stage="Loom login")
+                driver.get(self._normalize_library_url())
             try:
                 wait.until(lambda d: "loom.com" in d.current_url)
             except TimeoutException as exc:
@@ -906,6 +908,14 @@ class LoomCollector:
         if diagnostics:
             message += f" | Diagnostics: {diagnostics}"
         raise TimeoutException(message)
+
+    def _wait_for_library_url(self, driver, timeout_seconds: int = 10) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._is_library_url(self._safe_current_url(driver)):
+                return True
+            time.sleep(1)
+        return False
 
     def _switch_to_latest_window(self, driver) -> None:
         try:
