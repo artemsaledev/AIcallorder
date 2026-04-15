@@ -149,16 +149,25 @@ class LoomCollector:
         driver = self._create_driver()
         wait = WebDriverWait(driver, 20)
         try:
-            self._login(driver, wait)
+            try:
+                self._login(driver, wait)
+            except TimeoutException as exc:
+                self._raise_timeout_with_context(driver, exc, stage="Loom login")
             driver.get(self._normalize_library_url())
-            wait.until(lambda d: "loom.com" in d.current_url)
+            try:
+                wait.until(lambda d: "loom.com" in d.current_url)
+            except TimeoutException as exc:
+                self._raise_timeout_with_context(driver, exc, stage="Loom library redirect")
             search_query = self._build_search_query(primary_text_query, primary_date_query)
-            links = self._extract_library_links(
-                driver,
-                wait,
-                search_query=search_query,
-                search_results_limit=search_results_limit,
-            )
+            try:
+                links = self._extract_library_links(
+                    driver,
+                    wait,
+                    search_query=search_query,
+                    search_results_limit=search_results_limit,
+                )
+            except TimeoutException as exc:
+                self._raise_timeout_with_context(driver, exc, stage="Loom library discovery")
 
             results: list[CollectedVideo] = []
             for link in links:
@@ -953,6 +962,25 @@ class LoomCollector:
             pass
 
         return ", ".join(written)
+
+    def _raise_timeout_with_context(self, driver, exc: TimeoutException, *, stage: str) -> None:
+        current_url = self._safe_current_url(driver)
+        title = self._safe_page_title(driver)
+        blocker = self._detect_login_blocker(driver)
+        safe_stage = re.sub(r"[^a-z0-9]+", "-", stage.lower()).strip("-") or "loom-timeout"
+        diagnostics = self._capture_browser_diagnostics(driver, prefix=safe_stage)
+
+        parts = [f"{stage} timed out."]
+        if blocker:
+            parts.append(f"Detected blocker: {blocker}")
+        if current_url:
+            parts.append(f"Last URL: {current_url}")
+        if title:
+            parts.append(f"Last title: {title}")
+        if diagnostics:
+            parts.append(f"Diagnostics: {diagnostics}")
+
+        raise TimeoutException(" | ".join(parts)) from exc
 
     def _safe_page_source(self, driver) -> str:
         self._switch_to_latest_window(driver)
