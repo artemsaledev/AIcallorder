@@ -150,7 +150,7 @@ class LoomCollector:
         wait = WebDriverWait(driver, 20)
         try:
             driver.get(self._normalize_library_url())
-            if not self._wait_for_library_url(driver, timeout_seconds=10):
+            if not self._wait_for_library_ready(driver, timeout_seconds=12):
                 try:
                     self._login(driver, wait)
                 except TimeoutException as exc:
@@ -885,15 +885,16 @@ class LoomCollector:
         while time.time() < deadline:
             current_url = self._safe_current_url(driver)
             last_url = current_url
-            if self._is_library_url(current_url):
+            title = self._safe_page_title(driver)
+            visible_text = self._safe_visible_text(driver)
+            if self._looks_like_library_page(current_url, title=title, visible_text=visible_text):
                 return current_url
             blocker = self._detect_login_blocker(driver)
             if blocker:
-                title = self._safe_page_title(driver)
                 diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-login-blocked")
                 message = blocker
                 if current_url:
-                    message += f" Last URL: {current_url}"
+                    message += f" | Last URL: {current_url}"
                 if title:
                     message += f" | Last title: {title}"
                 if diagnostics:
@@ -909,10 +910,13 @@ class LoomCollector:
             message += f" | Diagnostics: {diagnostics}"
         raise TimeoutException(message)
 
-    def _wait_for_library_url(self, driver, timeout_seconds: int = 10) -> bool:
+    def _wait_for_library_ready(self, driver, timeout_seconds: int = 12) -> bool:
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            if self._is_library_url(self._safe_current_url(driver)):
+            current_url = self._safe_current_url(driver)
+            title = self._safe_page_title(driver)
+            visible_text = self._safe_visible_text(driver)
+            if self._looks_like_library_page(current_url, title=title, visible_text=visible_text):
                 return True
             time.sleep(1)
         return False
@@ -943,6 +947,24 @@ class LoomCollector:
         try:
             return driver.title or ""
         except WebDriverException:
+            return ""
+
+    def _safe_visible_text(self, driver) -> str:
+        self._switch_to_latest_window(driver)
+        try:
+            return (
+                driver.execute_script(
+                    """
+                    const body = document.body;
+                    if (!body) return '';
+                    return (body.innerText || '').trim();
+                    """
+                )
+                or ""
+            )
+        except WebDriverException:
+            return ""
+        except Exception:
             return ""
 
     def _capture_browser_diagnostics(self, driver, *, prefix: str) -> str:
@@ -976,6 +998,7 @@ class LoomCollector:
     def _raise_timeout_with_context(self, driver, exc: TimeoutException, *, stage: str) -> None:
         current_url = self._safe_current_url(driver)
         title = self._safe_page_title(driver)
+        visible_text = self._summarize_visible_text(self._safe_visible_text(driver))
         blocker = self._detect_login_blocker(driver)
         safe_stage = re.sub(r"[^a-z0-9]+", "-", stage.lower()).strip("-") or "loom-timeout"
         diagnostics = self._capture_browser_diagnostics(driver, prefix=safe_stage)
@@ -987,6 +1010,8 @@ class LoomCollector:
             parts.append(f"Last URL: {current_url}")
         if title:
             parts.append(f"Last title: {title}")
+        if visible_text:
+            parts.append(f"Visible text: {visible_text}")
         if diagnostics:
             parts.append(f"Diagnostics: {diagnostics}")
 
@@ -1000,10 +1025,17 @@ class LoomCollector:
             return ""
 
     def _detect_login_blocker(self, driver) -> str | None:
-        source = self._safe_page_source(driver).lower()
-        title = self._safe_page_title(driver).lower()
-        url = self._safe_current_url(driver).lower()
-        haystack = "\n".join(part for part in (source, title, url) if part)
+        title = self._safe_page_title(driver)
+        url = self._safe_current_url(driver)
+        visible_text = self._safe_visible_text(driver)
+        if self._looks_like_library_page(url, title=title, visible_text=visible_text):
+            return None
+
+        haystack = "\n".join(
+            part.lower()
+            for part in (self._summarize_visible_text(visible_text, limit=2000), title, url)
+            if part
+        )
 
         verification_markers = (
             "verification code",
@@ -1013,11 +1045,13 @@ class LoomCollector:
             "email verification",
             "one-time passcode",
             "one time passcode",
+            "enter the code",
+            "enter your code",
+            "security code",
             "two-step verification",
             "2-step verification",
             "two factor",
             "2fa",
-            "otp",
         )
         if any(marker in haystack for marker in verification_markers):
             return (
@@ -1048,7 +1082,29 @@ class LoomCollector:
         if "loom.com" not in (parsed.netloc or ""):
             return False
         path = (parsed.path or "").rstrip("/").lower()
-        return path in {"/library", "/looms/videos"}
+        return (
+            path == "/library"
+            or path.startswith("/library/")
+            or path == "/looms/videos"
+            or path.startswith("/looms/videos/")
+        )
+
+    def _looks_like_library_page(self, url: str, *, title: str = "", visible_text: str = "") -> bool:
+        if self._is_library_url(url):
+            return True
+        title_lower = title.lower()
+        if "loom" in title_lower and ("library" in title_lower or "videos" in title_lower):
+            return True
+        text_lower = visible_text.lower()
+        if "videos" in text_lower and "library" in text_lower and "loom" in text_lower:
+            return True
+        return False
+
+    def _summarize_visible_text(self, text: str, *, limit: int = 320) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 3].rstrip(" ,;:.") + "..."
 
     def _resolve_profile_dir(self) -> tuple[str, bool]:
         configured_dir = self.chrome_user_data_dir or os.environ.get("CHROME_USER_DATA_DIR")
