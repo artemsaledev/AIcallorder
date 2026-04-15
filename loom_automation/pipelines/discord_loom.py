@@ -121,6 +121,7 @@ class DiscordLoomPipeline:
             recorded_date_from=request.recorded_date_from,
             recorded_date_to=request.recorded_date_to,
         )
+        collection_debug = dict(getattr(self.collector, "last_collection_debug", {}) or {})
         results = []
         for collected in collected_items:
             meeting = self.collector.to_meeting_metadata(collected, meeting_type=request.meeting_type)
@@ -163,6 +164,7 @@ class DiscordLoomPipeline:
         return {
             "pipeline": "loom-auto-import",
             "processed_count": len(results),
+            "collection_debug": collection_debug,
             "results": results,
         }
 

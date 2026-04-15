@@ -681,13 +681,13 @@ def index(meetings_page: int = 1, runs_page: int = 1) -> str:
         <div class="grid">
           <div>
             <label for="loom_primary_text_query">Primary text key</label>
-            <input id="loom_primary_text_query" name="loom_primary_text_query" value="#daily" placeholder="#daily" />
-            <div class="hint">Loom search first tries this text key before fallback scrolling.</div>
+            <input id="loom_primary_text_query" name="loom_primary_text_query" value="" placeholder="#daily" />
+            <div class="hint">Optional. Leave empty to scan the whole Loom folder before any text-based narrowing.</div>
           </div>
           <div>
             <label for="loom_primary_date_query">Primary date key</label>
-            <input id="loom_primary_date_query" name="loom_primary_date_query" type="date" value="{default_today}" />
-            <div class="hint">Use the exact day you want to find in Loom.</div>
+            <input id="loom_primary_date_query" name="loom_primary_date_query" type="date" value="" />
+            <div class="hint">Optional. Leave empty unless you intentionally want Loom search to narrow the folder by one exact date.</div>
           </div>
           <div>
             <label for="loom_search_results_limit">Search depth limit</label>

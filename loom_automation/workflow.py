@@ -251,6 +251,15 @@ class AutomationWorkflow:
 
     def import_latest_loom(self, request: LoomImportRequest, initiated_by: str = "manual") -> dict:
         started_at = datetime.utcnow()
+        effective_filters = {
+            "primary_text_query": request.primary_text_query,
+            "primary_date_query": request.primary_date_query.isoformat() if request.primary_date_query else None,
+            "search_results_limit": request.search_results_limit,
+            "title_include_keywords": request.title_include_keywords,
+            "title_exclude_keywords": request.title_exclude_keywords,
+            "recorded_date_from": request.recorded_date_from.isoformat() if request.recorded_date_from else None,
+            "recorded_date_to": request.recorded_date_to.isoformat() if request.recorded_date_to else None,
+        }
         overrides = {}
         if request.llm_provider:
             overrides["llm_provider"] = request.llm_provider
@@ -273,6 +282,8 @@ class AutomationWorkflow:
                     "meeting_type": request.meeting_type,
                     "processed_count": result.get("processed_count", 0),
                     "limit": request.limit,
+                    "filters": effective_filters,
+                    "collection_debug": result.get("collection_debug", {}),
                     "titles": [item.get("meeting", {}).get("title") for item in processed[:5]],
                 },
             )
@@ -286,6 +297,7 @@ class AutomationWorkflow:
                 summary={
                     "meeting_type": request.meeting_type,
                     "limit": request.limit,
+                    "filters": effective_filters,
                     **error_summary,
                 },
             )
@@ -293,6 +305,7 @@ class AutomationWorkflow:
         finally:
             if previous:
                 self._restore_runtime(previous)
+        result["filters"] = effective_filters
         result["next_step"] = "Tune transcript selectors against your Loom workspace UI and then schedule recurring imports."
         return result
 

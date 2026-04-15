@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 import logging
 import os
@@ -56,6 +56,7 @@ class LoomCollector:
     chrome_user_data_dir: str | None = None
     chrome_window_size: str = "1600,1200"
     chrome_extra_args: str = ""
+    last_collection_debug: dict[str, object] = field(default_factory=dict)
 
     def collect_from_manual_input(
         self,
@@ -148,6 +149,23 @@ class LoomCollector:
 
         driver = self._create_driver()
         wait = WebDriverWait(driver, 20)
+        search_query = self._build_search_query(primary_text_query, primary_date_query)
+        debug: dict[str, object] = {
+            "library_url": self._normalize_library_url(),
+            "search_query": search_query,
+            "search_results_limit": search_results_limit,
+            "links_found": 0,
+            "skipped_known": 0,
+            "skipped_transcript_error": 0,
+            "skipped_empty_transcript": 0,
+            "skipped_title_filter": 0,
+            "skipped_recorded_date": 0,
+            "collected": 0,
+            "sample_links": [],
+            "sample_collected_titles": [],
+            "sample_skips": [],
+        }
+        self.last_collection_debug = debug
         try:
             driver.get(self._normalize_library_url())
             if not self._wait_for_library_ready(driver, timeout_seconds=12):
@@ -160,7 +178,6 @@ class LoomCollector:
                 wait.until(lambda d: "loom.com" in d.current_url)
             except TimeoutException as exc:
                 self._raise_timeout_with_context(driver, exc, stage="Loom library redirect")
-            search_query = self._build_search_query(primary_text_query, primary_date_query)
             try:
                 links = self._extract_library_links(
                     driver,
@@ -172,17 +189,25 @@ class LoomCollector:
                 self._raise_timeout_with_context(driver, exc, stage="Loom library discovery")
 
             results: list[CollectedVideo] = []
+            debug["links_found"] = len(links)
+            debug["sample_links"] = links[:5]
             for link in links:
                 video_id = self._parse_video_id(link)
                 if video_id in known_video_ids or link in known_urls:
+                    debug["skipped_known"] = int(debug["skipped_known"]) + 1
+                    self._append_debug_skip(debug, reason="known", link=link)
                     continue
 
                 try:
                     transcript_text, title = self._extract_transcript(driver, wait, link)
                 except Exception as exc:
                     logger.warning("Skipping Loom video %s after transcript extraction error: %s", link, exc)
+                    debug["skipped_transcript_error"] = int(debug["skipped_transcript_error"]) + 1
+                    self._append_debug_skip(debug, reason="transcript_error", link=link, title=None, details=str(exc))
                     continue
                 if not transcript_text:
+                    debug["skipped_empty_transcript"] = int(debug["skipped_empty_transcript"]) + 1
+                    self._append_debug_skip(debug, reason="empty_transcript", link=link, title=title)
                     continue
                 resolved_title = title or video_id
                 recorded_at = self._infer_recorded_at(resolved_title)
@@ -191,8 +216,12 @@ class LoomCollector:
                     title_include_keywords=title_include_keywords,
                     title_exclude_keywords=title_exclude_keywords,
                 ):
+                    debug["skipped_title_filter"] = int(debug["skipped_title_filter"]) + 1
+                    self._append_debug_skip(debug, reason="title_filter", link=link, title=resolved_title)
                     continue
                 if not self._matches_recorded_date(recorded_at, recorded_date_from, recorded_date_to):
+                    debug["skipped_recorded_date"] = int(debug["skipped_recorded_date"]) + 1
+                    self._append_debug_skip(debug, reason="recorded_date", link=link, title=resolved_title)
                     continue
 
                 results.append(
@@ -205,12 +234,41 @@ class LoomCollector:
                         tags=["loom-auto"],
                     )
                 )
+                debug["collected"] = len(results)
+                collected_titles = list(debug.get("sample_collected_titles", []))
+                if len(collected_titles) < 5:
+                    collected_titles.append(resolved_title)
+                    debug["sample_collected_titles"] = collected_titles
                 if len(results) >= limit:
                     break
 
+            debug["collected"] = len(results)
             return results
         finally:
             self._dispose_driver(driver)
+
+    def _append_debug_skip(
+        self,
+        debug: dict[str, object],
+        *,
+        reason: str,
+        link: str,
+        title: str | None = None,
+        details: str | None = None,
+    ) -> None:
+        skips = list(debug.get("sample_skips", []))
+        if len(skips) >= 5:
+            return
+        item = {
+            "reason": reason,
+            "link": link,
+        }
+        if title:
+            item["title"] = title
+        if details:
+            item["details"] = details
+        skips.append(item)
+        debug["sample_skips"] = skips
 
     def _create_driver(self):
         last_error: Exception | None = None
