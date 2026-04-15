@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -126,6 +127,44 @@ class AutomationWorkflow:
             summary=summary,
         )
 
+    def describe_exception(self, exc: Exception) -> dict[str, Any]:
+        raw_message = str(exc or "").strip()
+        compact_lines: list[str] = []
+        for line in raw_message.splitlines():
+            normalized = line.strip()
+            lowered = normalized.lower()
+            if not normalized:
+                continue
+            if lowered in {"message:", "stacktrace:"}:
+                continue
+            if normalized.startswith("#"):
+                continue
+            compact_lines.append(normalized)
+
+        compact_message = " ".join(compact_lines).strip()
+        error_repr = repr(exc).strip()
+        error_type = exc.__class__.__name__
+        traceback_text = traceback.format_exc().strip()
+        traceback_tail = ""
+        if traceback_text and traceback_text != "NoneType: None":
+            traceback_tail = "\n".join(traceback_text.splitlines()[-12:]).strip()
+
+        readable_error = compact_message or error_type
+        if not compact_message and not raw_message and error_repr:
+            readable_error = error_repr
+
+        summary: dict[str, Any] = {
+            "error_type": error_type,
+            "error": readable_error,
+        }
+        if raw_message and raw_message != readable_error:
+            summary["error_message"] = raw_message
+        if error_repr and error_repr != readable_error:
+            summary["error_repr"] = error_repr
+        if traceback_tail:
+            summary["error_traceback_tail"] = traceback_tail
+        return summary
+
     def process_meeting(self, request: ProcessMeetingRequest, initiated_by: str = "manual") -> dict:
         started_at = datetime.utcnow()
         overrides = {}
@@ -150,6 +189,7 @@ class AutomationWorkflow:
                 },
             )
         except Exception as exc:
+            error_summary = self.describe_exception(exc)
             self._log_run(
                 run_type="process_meeting",
                 initiated_by=initiated_by,
@@ -158,7 +198,7 @@ class AutomationWorkflow:
                 summary={
                     "collector_source": request.collector_source,
                     "meeting_type": request.meeting_type,
-                    "error": str(exc),
+                    **error_summary,
                 },
             )
             raise
@@ -190,6 +230,7 @@ class AutomationWorkflow:
                 },
             )
         except Exception as exc:
+            error_summary = self.describe_exception(exc)
             self._log_run(
                 run_type="process_folder",
                 initiated_by=initiated_by,
@@ -198,7 +239,7 @@ class AutomationWorkflow:
                 summary={
                     "folder_path": request.folder_path,
                     "meeting_type": request.meeting_type,
-                    "error": str(exc),
+                    **error_summary,
                 },
             )
             raise
@@ -236,6 +277,7 @@ class AutomationWorkflow:
                 },
             )
         except Exception as exc:
+            error_summary = self.describe_exception(exc)
             self._log_run(
                 run_type="loom_import",
                 initiated_by=initiated_by,
@@ -244,7 +286,7 @@ class AutomationWorkflow:
                 summary={
                     "meeting_type": request.meeting_type,
                     "limit": request.limit,
-                    "error": str(exc),
+                    **error_summary,
                 },
             )
             raise
@@ -307,6 +349,7 @@ class AutomationWorkflow:
             )
             return result
         except Exception as exc:
+            error_summary = self.describe_exception(exc)
             self._log_run(
                 run_type="daily_digest",
                 initiated_by=initiated_by,
@@ -315,7 +358,7 @@ class AutomationWorkflow:
                 summary={
                     "report_date": request.report_date.isoformat(),
                     "items_count": len(payload),
-                    "error": str(exc),
+                    **error_summary,
                 },
             )
             raise

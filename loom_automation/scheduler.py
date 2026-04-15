@@ -214,8 +214,9 @@ class AutomationScheduler:
             self._mark_finished(task, "success", "Local folder run completed.", summary)
             return {"scheduled": True, **summary}
         except Exception as exc:
-            self._mark_finished(task, "error", str(exc), {})
-            return {"scheduled": True, "error": str(exc)}
+            error_summary = self.workflow.describe_exception(exc)
+            self._mark_finished(task, "error", error_summary["error"], error_summary)
+            return {"scheduled": True, **error_summary}
 
     def _execute_loom_import(self) -> dict[str, Any]:
         task = self.loom
@@ -238,8 +239,9 @@ class AutomationScheduler:
             self._mark_finished(task, "success", "Loom import completed.", summary)
             return {"scheduled": True, **summary}
         except Exception as exc:
-            self._mark_finished(task, "error", str(exc), {})
-            return {"scheduled": True, "error": str(exc)}
+            error_summary = self.workflow.describe_exception(exc)
+            self._mark_finished(task, "error", error_summary["error"], error_summary)
+            return {"scheduled": True, **error_summary}
         finally:
             self.workflow.loom_client.library_url = previous_library_url
 
