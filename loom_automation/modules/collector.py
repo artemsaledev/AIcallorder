@@ -736,34 +736,35 @@ class LoomCollector:
                     parts.append(f"Diagnostics: {diagnostics}")
                 raise TimeoutException(" | ".join(parts))
 
-            transcript_text = self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(
-                driver
+            transcript_opened = self._open_transcript_panel(driver, wait)
+            transcript_text = self._extract_transcript_via_copy_button(driver, wait) or (
+                self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(driver)
             )
-            if not transcript_text:
-                transcript_opened = self._open_transcript_panel(driver, wait)
-                if transcript_opened:
-                    try:
-                        wait.until(
-                            lambda d: bool(
-                                self._extract_virtualized_transcript_rows(d) or self._extract_transcript_text_from_dom(d)
-                            )
+            if not transcript_text and transcript_opened:
+                try:
+                    wait.until(
+                        lambda d: bool(
+                            self._extract_transcript_via_copy_button(d, wait)
+                            or self._extract_virtualized_transcript_rows(d)
+                            or self._extract_transcript_text_from_dom(d)
                         )
-                    except TimeoutException as exc:
-                        diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-transcript-timeout")
-                        parts = ["Transcript panel opened but no transcript content became visible."]
-                        if video_url:
-                            parts.append(f"Video URL: {video_url}")
-                        if title:
-                            parts.append(f"Last title: {title}")
-                        visible_text = self._summarize_visible_text(self._safe_visible_text(driver), limit=500)
-                        if visible_text:
-                            parts.append(f"Visible text: {visible_text}")
-                        if diagnostics:
-                            parts.append(f"Diagnostics: {diagnostics}")
-                        raise TimeoutException(" | ".join(parts)) from exc
-                    transcript_text = self._extract_virtualized_transcript_rows(
-                        driver
-                    ) or self._extract_transcript_text_from_dom(driver)
+                    )
+                except TimeoutException as exc:
+                    diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-transcript-timeout")
+                    parts = ["Transcript panel opened but no transcript content became visible."]
+                    if video_url:
+                        parts.append(f"Video URL: {video_url}")
+                    if title:
+                        parts.append(f"Last title: {title}")
+                    visible_text = self._summarize_visible_text(self._safe_visible_text(driver), limit=500)
+                    if visible_text:
+                        parts.append(f"Visible text: {visible_text}")
+                    if diagnostics:
+                        parts.append(f"Diagnostics: {diagnostics}")
+                    raise TimeoutException(" | ".join(parts)) from exc
+                transcript_text = self._extract_transcript_via_copy_button(driver, wait) or (
+                    self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(driver)
+                )
 
             cleaned = self._clean_transcript_text(transcript_text)
             return (cleaned or None), title
@@ -808,6 +809,101 @@ class LoomCollector:
                 except Exception:
                     continue
         return False
+
+    def _extract_transcript_via_copy_button(self, driver, wait: WebDriverWait) -> str:
+        self._install_clipboard_capture_hook(driver)
+        if not self._click_transcript_copy_button(driver, wait):
+            return ""
+        copied = self._read_captured_clipboard_text(driver)
+        return self._clean_transcript_text(copied)
+
+    def _install_clipboard_capture_hook(self, driver) -> None:
+        try:
+            driver.execute_script(
+                """
+                if (window.__aicallorderClipboardHookInstalled) {
+                  return;
+                }
+
+                window.__aicallorderCopiedText = '';
+
+                const captureText = (value) => {
+                  if (value == null) return;
+                  try {
+                    const text = String(value).trim();
+                    if (text) {
+                      window.__aicallorderCopiedText = text;
+                    }
+                  } catch (error) {
+                    // ignore capture errors
+                  }
+                };
+
+                try {
+                  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                    const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
+                    navigator.clipboard.writeText = function(text) {
+                      captureText(text);
+                      try {
+                        return originalWriteText(text);
+                      } catch (error) {
+                        return Promise.resolve();
+                      }
+                    };
+                  }
+                } catch (error) {
+                  // ignore patch errors
+                }
+
+                document.addEventListener('copy', (event) => {
+                  try {
+                    const clipboardText = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+                    captureText(clipboardText || (window.getSelection ? window.getSelection().toString() : ''));
+                  } catch (error) {
+                    captureText(window.getSelection ? window.getSelection().toString() : '');
+                  }
+                }, true);
+
+                window.__aicallorderClipboardHookInstalled = true;
+                """
+            )
+        except Exception:
+            return
+
+    def _click_transcript_copy_button(self, driver, wait: WebDriverWait) -> bool:
+        selectors = [
+            (By.XPATH, "//button[.//span[normalize-space()='Copy']]"),
+            (By.XPATH, "//button[contains(., 'Copy')]"),
+            (By.XPATH, "//*[self::button or @role='button'][.//span[normalize-space()='Copy']]"),
+            (By.XPATH, "//*[self::button or @role='button'][contains(normalize-space(.), 'Copy')]"),
+        ]
+        for by, selector in selectors:
+            try:
+                elements = wait.until(lambda d: d.find_elements(by, selector))
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    if not element.is_displayed():
+                        continue
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                    driver.execute_script("arguments[0].click();", element)
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _read_captured_clipboard_text(self, driver) -> str:
+        for _ in range(10):
+            try:
+                copied = driver.execute_script("return window.__aicallorderCopiedText || '';") or ""
+            except Exception:
+                copied = ""
+            copied = str(copied).strip()
+            if copied:
+                return copied
+            time.sleep(0.2)
+        return ""
 
     def _extract_virtualized_transcript_rows(self, driver) -> str:
         self._reset_transcript_scroll(driver)

@@ -19,7 +19,12 @@ class _FakeDriver:
     def window(self, _handle: str) -> None:
         return None
 
+    def get(self, url: str) -> None:
+        self.current_url = url
+
     def execute_script(self, script: str):
+        if "document.readyState" in script:
+            return "complete"
         if "body.innerText" in script:
             return self._visible_text
         return None
@@ -102,6 +107,25 @@ class LoomCollectorLoginTests(unittest.TestCase):
             transcript,
             "0:02\nFirst segment\n0:26\nSecond segment\n0:40\nThird segment\n1:05\nFourth segment",
         )
+
+    def test_extract_transcript_prefers_copy_button_payload(self) -> None:
+        collector = LoomCollector()
+        driver = _FakeDriver(
+            url="https://www.loom.com/share/example-video",
+            title="Example video | Loom",
+            visible_text="Transcript panel is visible",
+        )
+
+        collector._detect_login_blocker = lambda _driver: None
+        collector._open_transcript_panel = lambda _driver, _wait: True
+        collector._extract_transcript_via_copy_button = lambda _driver, _wait: "0:03\nFull copied transcript"
+        collector._extract_virtualized_transcript_rows = lambda _driver: ""
+        collector._extract_transcript_text_from_dom = lambda _driver: ""
+
+        transcript, title = collector._extract_transcript(driver, object(), driver.current_url)
+
+        self.assertEqual(transcript, "0:03\nFull copied transcript")
+        self.assertEqual(title, "Example video")
 
 
 if __name__ == "__main__":
