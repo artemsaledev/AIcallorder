@@ -127,6 +127,39 @@ class LoomCollectorLoginTests(unittest.TestCase):
         self.assertEqual(transcript, "0:03\nFull copied transcript")
         self.assertEqual(title, "Example video")
 
+    def test_read_all_library_links_includes_share_urls_from_html(self) -> None:
+        collector = LoomCollector()
+        driver = _FakeDriver(
+            url="https://www.loom.com/looms/videos/example-folder",
+            title="Videos | Library | Loom",
+            page_source="""
+                <html>
+                  <body>
+                    <script>
+                      window.__DATA__ = {
+                        "items": [
+                          {"shareUrl":"https://www.loom.com/share/alpha123"},
+                          {"shareUrl":"https://www.loom.com/share/beta456"}
+                        ]
+                      };
+                    </script>
+                  </body>
+                </html>
+            """,
+        )
+        collector._read_visible_library_links = lambda _driver: ["https://www.loom.com/share/visible789"]
+
+        links = collector._read_all_library_links(driver)
+
+        self.assertEqual(
+            links,
+            [
+                "https://www.loom.com/share/visible789",
+                "https://www.loom.com/share/alpha123",
+                "https://www.loom.com/share/beta456",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

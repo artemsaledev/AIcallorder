@@ -507,20 +507,7 @@ class LoomCollector:
         driver.get(self._normalize_library_url())
         wait.until(lambda d: self._is_library_url(self._safe_current_url(d)) and "Videos" in d.title)
         try:
-            wait.until(
-                lambda d: len(
-                    d.execute_script(
-                        """
-                        const anchors = Array.from(document.querySelectorAll('a[href]'));
-                        return anchors.filter(a =>
-                          (a.href || '').includes('loom.com/share/') ||
-                          String(a.className || '').includes('video-card_videoCardLink')
-                        ).map(a => a.href);
-                        """
-                    )
-                )
-                > 0
-            )
+            wait.until(lambda d: len(self._read_visible_library_links(d)) > 0)
         except Exception:
             pass
         if search_query:
@@ -537,7 +524,7 @@ class LoomCollector:
         stable_rounds = 0
         hrefs: list[str] = []
         for _ in range(50):
-            hrefs = self._read_visible_library_links(driver)
+            hrefs = self._read_all_library_links(driver)
             current_count = len(hrefs)
             if current_count == previous_count:
                 stable_rounds += 1
@@ -550,7 +537,7 @@ class LoomCollector:
                 break
             try:
                 WebDriverWait(driver, 5).until(
-                    lambda d: len(self._read_visible_library_links(d)) > current_count
+                    lambda d: len(self._read_all_library_links(d)) > current_count
                 )
             except Exception:
                 pass
@@ -579,6 +566,49 @@ class LoomCollector:
         except Exception:
             hrefs = []
         return [str(href).strip() for href in (hrefs or []) if str(href).strip()]
+
+    def _read_all_library_links(self, driver) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+
+        for href in self._read_visible_library_links(driver):
+            if href not in seen:
+                seen.add(href)
+                deduped.append(href)
+
+        html_sources: list[str] = []
+        try:
+            html_sources.append(driver.page_source or "")
+        except Exception:
+            pass
+        try:
+            live_html = driver.execute_script("return document.documentElement ? document.documentElement.outerHTML : '';")
+            if live_html:
+                html_sources.append(str(live_html))
+        except Exception:
+            pass
+
+        for html_source in html_sources:
+            for href in self._extract_share_links_from_html(html_source):
+                if href not in seen:
+                    seen.add(href)
+                    deduped.append(href)
+
+        return deduped
+
+    def _extract_share_links_from_html(self, html_source: str) -> list[str]:
+        if not html_source:
+            return []
+
+        matches = re.findall(r"https://www\.loom\.com/share/[a-zA-Z0-9]+", html_source)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for href in matches:
+            normalized = href.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(normalized)
+        return deduped
 
     def _reset_library_scroll(self, driver) -> None:
         try:
