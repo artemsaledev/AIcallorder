@@ -164,6 +164,7 @@ class LoomCollector:
             "sample_links": [],
             "sample_collected_titles": [],
             "sample_skips": [],
+            "library_link_counts": [],
         }
         self.last_collection_debug = debug
         try:
@@ -520,28 +521,30 @@ class LoomCollector:
             if searched_links:
                 return searched_links
         self._reset_library_scroll(driver)
-        previous_count = -1
+        best_count = -1
         stable_rounds = 0
         hrefs: list[str] = []
         for _ in range(50):
             hrefs = self._read_all_library_links(driver)
             current_count = len(hrefs)
-            if current_count == previous_count:
-                stable_rounds += 1
-            else:
+            if current_count > best_count:
+                best_count = current_count
                 stable_rounds = 0
-            if stable_rounds >= 4:
+            else:
+                stable_rounds += 1
+            counts = list(self.last_collection_debug.get("library_link_counts", []))
+            if len(counts) < 60:
+                counts.append(current_count)
+                self.last_collection_debug["library_link_counts"] = counts
+            if stable_rounds >= 6:
                 break
-            previous_count = current_count
-            if not self._scroll_library_results(driver):
-                break
-            try:
-                WebDriverWait(driver, 5).until(
-                    lambda d: len(self._read_all_library_links(d)) > current_count
-                )
-            except Exception:
-                pass
-            time.sleep(0.6)
+            scrolled = self._scroll_library_results(driver)
+            self._force_library_lazy_load(driver)
+            grew = self._wait_for_library_link_growth(driver, current_count, timeout_seconds=8)
+            if grew:
+                stable_rounds = 0
+            elif not scrolled:
+                stable_rounds += 1
         deduped = []
         seen = set()
         for href in hrefs:
@@ -696,6 +699,44 @@ class LoomCollector:
             )
         except Exception:
             return False
+
+    def _force_library_lazy_load(self, driver) -> None:
+        try:
+            driver.execute_script(
+                """
+                const anchors = Array.from(document.querySelectorAll('a[href]')).filter(a =>
+                  (a.href || '').includes('loom.com/share/') ||
+                  (a.className || '').includes('video-card_videoCardLink')
+                );
+                const lastAnchor = anchors.length ? anchors[anchors.length - 1] : null;
+                if (lastAnchor && typeof lastAnchor.scrollIntoView === 'function') {
+                  lastAnchor.scrollIntoView({block: 'end', inline: 'nearest'});
+                }
+                """
+            )
+        except Exception:
+            pass
+
+        try:
+            body = driver.find_element(By.TAG_NAME, "body")
+            body.send_keys(Keys.PAGE_DOWN)
+            body.send_keys(Keys.PAGE_DOWN)
+            body.send_keys(Keys.END)
+        except Exception:
+            pass
+
+    def _wait_for_library_link_growth(self, driver, previous_count: int, *, timeout_seconds: int = 8) -> bool:
+        deadline = time.time() + max(1, timeout_seconds)
+        while time.time() < deadline:
+            try:
+                current_count = len(self._read_all_library_links(driver))
+            except Exception:
+                current_count = previous_count
+            if current_count > previous_count:
+                return True
+            time.sleep(0.5)
+            self._force_library_lazy_load(driver)
+        return False
 
     def _search_library_links(
         self,
