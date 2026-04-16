@@ -536,25 +536,25 @@ class LoomCollector:
         previous_count = -1
         stable_rounds = 0
         hrefs: list[str] = []
-        for _ in range(30):
+        for _ in range(50):
             hrefs = self._read_visible_library_links(driver)
             current_count = len(hrefs)
             if current_count == previous_count:
                 stable_rounds += 1
             else:
                 stable_rounds = 0
-            if stable_rounds >= 2:
+            if stable_rounds >= 4:
                 break
             previous_count = current_count
             if not self._scroll_library_results(driver):
                 break
             try:
                 WebDriverWait(driver, 5).until(
-                    lambda d: len(self._read_visible_library_links(d)) >= current_count
+                    lambda d: len(self._read_visible_library_links(d)) > current_count
                 )
             except Exception:
                 pass
-            time.sleep(0.25)
+            time.sleep(0.6)
         deduped = []
         seen = set()
         for href in hrefs:
