@@ -532,11 +532,39 @@ class LoomCollector:
             )
             if searched_links:
                 return searched_links
-        driver.execute_script("window.scrollTo(0, 0);")
+        self._reset_library_scroll(driver)
         previous_count = -1
         stable_rounds = 0
         hrefs: list[str] = []
-        for _ in range(12):
+        for _ in range(30):
+            hrefs = self._read_visible_library_links(driver)
+            current_count = len(hrefs)
+            if current_count == previous_count:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            if stable_rounds >= 2:
+                break
+            previous_count = current_count
+            if not self._scroll_library_results(driver):
+                break
+            try:
+                WebDriverWait(driver, 5).until(
+                    lambda d: len(self._read_visible_library_links(d)) >= current_count
+                )
+            except Exception:
+                pass
+            time.sleep(0.25)
+        deduped = []
+        seen = set()
+        for href in hrefs:
+            if href not in seen:
+                seen.add(href)
+                deduped.append(href)
+        return deduped
+
+    def _read_visible_library_links(self, driver) -> list[str]:
+        try:
             hrefs = driver.execute_script(
                 """
                 const anchors = Array.from(document.querySelectorAll('a[href]'));
@@ -548,28 +576,96 @@ class LoomCollector:
                   .map(a => a.href);
                 """
             )
-            current_count = len(hrefs)
-            if current_count == previous_count:
-                stable_rounds += 1
-            else:
-                stable_rounds = 0
-            if stable_rounds >= 2:
-                break
-            previous_count = current_count
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            try:
-                WebDriverWait(driver, 5).until(
-                    lambda d: d.execute_script("return document.body.scrollHeight") > 0
+        except Exception:
+            hrefs = []
+        return [str(href).strip() for href in (hrefs or []) if str(href).strip()]
+
+    def _reset_library_scroll(self, driver) -> None:
+        try:
+            driver.execute_script(
+                """
+                const anchors = Array.from(document.querySelectorAll('a[href]')).filter(a =>
+                  (a.href || '').includes('loom.com/share/') ||
+                  (a.className || '').includes('video-card_videoCardLink')
+                );
+
+                const findScrollableParent = (element) => {
+                  let current = element;
+                  while (current && current !== document.body) {
+                    const style = window.getComputedStyle(current);
+                    const overflowY = style ? style.overflowY : '';
+                    if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                      return current;
+                    }
+                    current = current.parentElement;
+                  }
+                  return null;
+                };
+
+                const container = anchors.length ? findScrollableParent(anchors[0]) : null;
+                if (container) {
+                  container.scrollTop = 0;
+                } else {
+                  window.scrollTo(0, 0);
+                }
+                """
+            )
+        except Exception:
+            return
+
+    def _scroll_library_results(self, driver) -> bool:
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const anchors = Array.from(document.querySelectorAll('a[href]')).filter(a =>
+                      (a.href || '').includes('loom.com/share/') ||
+                      (a.className || '').includes('video-card_videoCardLink')
+                    );
+
+                    const findScrollableParent = (element) => {
+                      let current = element;
+                      while (current && current !== document.body) {
+                        const style = window.getComputedStyle(current);
+                        const overflowY = style ? style.overflowY : '';
+                        if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                          return current;
+                        }
+                        current = current.parentElement;
+                      }
+                      return null;
+                    };
+
+                    const container = anchors.length ? findScrollableParent(anchors[0]) : null;
+                    if (container) {
+                      const before = container.scrollTop;
+                      const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                      if (before >= maxScrollTop - 2) {
+                        return false;
+                      }
+                      const step = Math.max(Math.floor(container.clientHeight * 0.9), 320);
+                      container.scrollTop = Math.min(maxScrollTop, before + step);
+                      return container.scrollTop > before + 1;
+                    }
+
+                    const before = window.scrollY || window.pageYOffset || 0;
+                    const maxScrollTop = Math.max(
+                      0,
+                      Math.max(
+                        document.body ? document.body.scrollHeight : 0,
+                        document.documentElement ? document.documentElement.scrollHeight : 0
+                      ) - window.innerHeight
+                    );
+                    if (before >= maxScrollTop - 2) {
+                      return false;
+                    }
+                    window.scrollTo(0, Math.min(maxScrollTop, before + Math.max(Math.floor(window.innerHeight * 0.9), 320)));
+                    return (window.scrollY || window.pageYOffset || 0) > before + 1;
+                    """
                 )
-            except Exception:
-                pass
-        deduped = []
-        seen = set()
-        for href in hrefs:
-            if href not in seen:
-                seen.add(href)
-                deduped.append(href)
-        return deduped
+            )
+        except Exception:
+            return False
 
     def _search_library_links(
         self,
