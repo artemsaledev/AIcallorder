@@ -61,7 +61,10 @@ class TranscriptProcessor:
         cleaned = str(payload.get("cleaned_transcript", "")).strip()
         if not cleaned:
             return transcript_text
-        return self._normalize_cleaned_transcript(cleaned)
+        normalized = self._normalize_cleaned_transcript(cleaned)
+        if self._looks_lossy(original=transcript_text, cleaned=normalized):
+            return transcript_text
+        return normalized
 
     def _resolve_prompt_for_title(self, title: str) -> str:
         routing = load_prompt_routing_config(self.prompt_routes_path)
@@ -188,3 +191,25 @@ class TranscriptProcessor:
             if cleaned:
                 paragraphs.append(cleaned)
         return "\n".join(paragraphs).strip()
+
+    def _looks_lossy(self, *, original: str, cleaned: str) -> bool:
+        original_text = (original or "").strip()
+        cleaned_text = (cleaned or "").strip()
+        if not original_text or not cleaned_text:
+            return False
+
+        if len(cleaned_text) < max(200, int(len(original_text) * 0.55)):
+            return True
+
+        original_lines = [line.strip() for line in original_text.splitlines() if line.strip()]
+        cleaned_lines = [line.strip() for line in cleaned_text.splitlines() if line.strip()]
+        if len(original_lines) >= 6 and len(cleaned_lines) <= max(2, len(original_lines) // 4):
+            return True
+
+        timestamp_pattern = r"\b\d{1,2}:\d{2}(?::\d{2})?\b"
+        original_timestamps = len(re.findall(timestamp_pattern, original_text))
+        cleaned_timestamps = len(re.findall(timestamp_pattern, cleaned_text))
+        if original_timestamps >= 3 and cleaned_timestamps < max(1, original_timestamps // 3):
+            return True
+
+        return False

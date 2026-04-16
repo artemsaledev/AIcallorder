@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from loom_automation.modules.collector import LoomCollector
 
@@ -73,6 +74,34 @@ class LoomCollectorLoginTests(unittest.TestCase):
 
         self.assertIn("Payments.pro handoff", selected)
         self.assertNotIn("New folder", selected)
+
+    def test_extract_virtualized_transcript_rows_scrolls_and_merges_visible_batches(self) -> None:
+        collector = LoomCollector()
+        batches = [
+            ["0:02\nFirst segment", "0:26\nSecond segment"],
+            ["0:26\nSecond segment", "0:40\nThird segment"],
+            ["0:40\nThird segment", "1:05\nFourth segment"],
+        ]
+        state = {"index": 0}
+
+        collector._reset_transcript_scroll = lambda _driver: None
+        collector._read_visible_transcript_rows = lambda _driver: batches[state["index"]]
+
+        def _scroll(_driver) -> bool:
+            if state["index"] >= len(batches) - 1:
+                return False
+            state["index"] += 1
+            return True
+
+        collector._scroll_transcript_container = _scroll
+
+        with patch("loom_automation.modules.collector.time.sleep", return_value=None):
+            transcript = collector._extract_virtualized_transcript_rows(object())
+
+        self.assertEqual(
+            transcript,
+            "0:02\nFirst segment\n0:26\nSecond segment\n0:40\nThird segment\n1:05\nFourth segment",
+        )
 
 
 if __name__ == "__main__":

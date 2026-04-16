@@ -204,7 +204,7 @@ class GoogleWorkspacePublisher:
             f"- Loom video ID: {meeting.loom_video_id}\n"
             f"- Recorded at: {meeting.recorded_at.isoformat() if meeting.recorded_at else '-'}\n"
             f"- Source URL: {meeting.source_url}\n\n"
-            f"Processed Transcript\n"
+            f"Transcript\n"
             f"{transcript_text.strip()}\n"
             f"{marker_end}\n\n"
         )

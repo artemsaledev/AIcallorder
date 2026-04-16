@@ -140,7 +140,12 @@ class Transcriber:
         )
 
     def _normalize_transcript(self, text: str) -> str:
-        normalized = re.sub(r"\s+", " ", text).strip()
+        lines = []
+        for raw_line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            cleaned_line = re.sub(r"[ \t]+", " ", raw_line).strip()
+            if cleaned_line:
+                lines.append(cleaned_line)
+        normalized = "\n".join(lines).strip()
         replacements: list[tuple[str, str]] = [
             (r"\bбитрик[сc]\b", "Bitrix"),
             (r"\bбэтрикс\b", "Bitrix"),

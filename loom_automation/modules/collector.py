@@ -736,12 +736,18 @@ class LoomCollector:
                     parts.append(f"Diagnostics: {diagnostics}")
                 raise TimeoutException(" | ".join(parts))
 
-            transcript_text = self._extract_transcript_text_from_dom(driver)
+            transcript_text = self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(
+                driver
+            )
             if not transcript_text:
                 transcript_opened = self._open_transcript_panel(driver, wait)
                 if transcript_opened:
                     try:
-                        wait.until(lambda d: bool(self._extract_transcript_text_from_dom(d)))
+                        wait.until(
+                            lambda d: bool(
+                                self._extract_virtualized_transcript_rows(d) or self._extract_transcript_text_from_dom(d)
+                            )
+                        )
                     except TimeoutException as exc:
                         diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-transcript-timeout")
                         parts = ["Transcript panel opened but no transcript content became visible."]
@@ -755,7 +761,9 @@ class LoomCollector:
                         if diagnostics:
                             parts.append(f"Diagnostics: {diagnostics}")
                         raise TimeoutException(" | ".join(parts)) from exc
-                    transcript_text = self._extract_transcript_text_from_dom(driver)
+                    transcript_text = self._extract_virtualized_transcript_rows(
+                        driver
+                    ) or self._extract_transcript_text_from_dom(driver)
 
             cleaned = self._clean_transcript_text(transcript_text)
             return (cleaned or None), title
@@ -800,6 +808,121 @@ class LoomCollector:
                 except Exception:
                     continue
         return False
+
+    def _extract_virtualized_transcript_rows(self, driver) -> str:
+        self._reset_transcript_scroll(driver)
+        rows: list[str] = []
+        seen: set[str] = set()
+        stable_rounds = 0
+
+        for _ in range(30):
+            batch = self._read_visible_transcript_rows(driver)
+            new_rows = 0
+            for item in batch:
+                cleaned = self._clean_transcript_text(item)
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                rows.append(cleaned)
+                new_rows += 1
+
+            if not self._scroll_transcript_container(driver):
+                break
+
+            stable_rounds = stable_rounds + 1 if new_rows == 0 else 0
+            if stable_rounds >= 2:
+                break
+            time.sleep(0.2)
+
+        return "\n".join(rows).strip()
+
+    def _read_visible_transcript_rows(self, driver) -> list[str]:
+        try:
+            rows = driver.execute_script(
+                """
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const style = window.getComputedStyle(element);
+                  if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+                  const rect = element.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                };
+
+                return Array.from(document.querySelectorAll('[data-testid^="transcript-row-"]'))
+                  .filter(isVisible)
+                  .map((element) => (element.innerText || element.textContent || '').trim())
+                  .filter((text) => Boolean(text));
+                """
+            )
+        except Exception:
+            rows = []
+        return [str(item).strip() for item in (rows or []) if str(item).strip()]
+
+    def _reset_transcript_scroll(self, driver) -> None:
+        try:
+            driver.execute_script(
+                """
+                const findScrollableParent = (element) => {
+                  let current = element;
+                  while (current && current !== document.body) {
+                    const style = window.getComputedStyle(current);
+                    const overflowY = style ? style.overflowY : '';
+                    if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                      return current;
+                    }
+                    current = current.parentElement;
+                  }
+                  return null;
+                };
+
+                const firstRow = document.querySelector('[data-testid^="transcript-row-"]');
+                const container = firstRow ? findScrollableParent(firstRow) : null;
+                if (container) {
+                  container.scrollTop = 0;
+                }
+                """
+            )
+        except Exception:
+            return
+
+    def _scroll_transcript_container(self, driver) -> bool:
+        try:
+            return bool(
+                driver.execute_script(
+                    """
+                    const findScrollableParent = (element) => {
+                      let current = element;
+                      while (current && current !== document.body) {
+                        const style = window.getComputedStyle(current);
+                        const overflowY = style ? style.overflowY : '';
+                        if (current.scrollHeight > current.clientHeight + 20 && /(auto|scroll|overlay)/.test(overflowY)) {
+                          return current;
+                        }
+                        current = current.parentElement;
+                      }
+                      return null;
+                    };
+
+                    const firstRow = document.querySelector('[data-testid^="transcript-row-"]');
+                    const container = firstRow ? findScrollableParent(firstRow) : null;
+                    if (!container) {
+                      return false;
+                    }
+
+                    const before = container.scrollTop;
+                    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+                    if (before >= maxScrollTop - 2) {
+                      return false;
+                    }
+
+                    const step = Math.max(Math.floor(container.clientHeight * 0.85), 220);
+                    container.scrollTop = Math.min(maxScrollTop, before + step);
+                    return container.scrollTop > before + 1;
+                    """
+                )
+            )
+        except Exception:
+            return False
 
     def _extract_transcript_text_from_dom(self, driver) -> str:
         try:

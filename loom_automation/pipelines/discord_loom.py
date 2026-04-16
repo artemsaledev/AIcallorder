@@ -28,22 +28,23 @@ class DiscordLoomPipeline:
         collected = self._collect(request)
         meeting = self.collector.to_meeting_metadata(collected, meeting_type=request.meeting_type)
         transcript = self.transcriber.build_transcript(collected)
-        transcript_text = self.transcript_processor.process(
-            transcript.transcript_text,
+        raw_transcript_text = transcript.transcript_text
+        processed_transcript_text = self.transcript_processor.process(
+            raw_transcript_text,
             meeting_title=meeting.title,
         )
         artifacts = self.summarizer.summarize(
-            transcript_text,
+            processed_transcript_text,
             meeting_title=meeting.title,
             meeting_type=meeting.meeting_type,
         )
         if not artifacts.telegram_digest:
             artifacts.telegram_digest = self.telegram_reporter.render_meeting_digest(meeting, artifacts)
 
-        self.storage.upsert_meeting(meeting, transcript_text)
+        self.storage.upsert_meeting(meeting, raw_transcript_text)
         self.storage.save_artifacts(meeting.loom_video_id, artifacts)
 
-        google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, transcript_text)
+        google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, raw_transcript_text)
         artifacts.telegram_digest = self.telegram_reporter.append_meeting_links(
             artifacts.telegram_digest,
             meeting=meeting,
@@ -75,19 +76,20 @@ class DiscordLoomPipeline:
                 continue
             meeting = self.collector.to_meeting_metadata(collected, meeting_type=request.meeting_type)
             transcript = self.transcriber.build_transcript(collected)
-            transcript_text = self.transcript_processor.process(
-                transcript.transcript_text,
+            raw_transcript_text = transcript.transcript_text
+            processed_transcript_text = self.transcript_processor.process(
+                raw_transcript_text,
                 meeting_title=meeting.title,
             )
             artifacts = self.summarizer.summarize(
-                transcript_text,
+                processed_transcript_text,
                 meeting_title=meeting.title,
                 meeting_type=meeting.meeting_type,
             )
             if not artifacts.telegram_digest:
                 artifacts.telegram_digest = self.telegram_reporter.render_meeting_digest(meeting, artifacts)
 
-            self.storage.upsert_meeting(meeting, transcript_text)
+            self.storage.upsert_meeting(meeting, raw_transcript_text)
             self.storage.save_artifacts(meeting.loom_video_id, artifacts)
             known_urls.add(collected.source_url)
 
@@ -126,22 +128,23 @@ class DiscordLoomPipeline:
         for collected in collected_items:
             meeting = self.collector.to_meeting_metadata(collected, meeting_type=request.meeting_type)
             transcript = self.transcriber.build_transcript(collected)
-            transcript_text = self.transcript_processor.process(
-                transcript.transcript_text,
+            raw_transcript_text = transcript.transcript_text
+            processed_transcript_text = self.transcript_processor.process(
+                raw_transcript_text,
                 meeting_title=meeting.title,
             )
             artifacts = self.summarizer.summarize(
-                transcript_text,
+                processed_transcript_text,
                 meeting_title=meeting.title,
                 meeting_type=meeting.meeting_type,
             )
             if not artifacts.telegram_digest:
                 artifacts.telegram_digest = self.telegram_reporter.render_meeting_digest(meeting, artifacts)
 
-            self.storage.upsert_meeting(meeting, transcript_text)
+            self.storage.upsert_meeting(meeting, raw_transcript_text)
             self.storage.save_artifacts(meeting.loom_video_id, artifacts)
 
-            google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, transcript_text)
+            google_result = self.google_publisher.publish_meeting_artifacts(meeting, artifacts, raw_transcript_text)
             artifacts.telegram_digest = self.telegram_reporter.append_meeting_links(
                 artifacts.telegram_digest,
                 meeting=meeting,
