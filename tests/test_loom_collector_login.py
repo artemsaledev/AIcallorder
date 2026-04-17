@@ -127,6 +127,68 @@ class LoomCollectorLoginTests(unittest.TestCase):
         self.assertEqual(transcript, "0:03\nFull copied transcript")
         self.assertEqual(title, "Example video")
 
+    def test_extract_timestamped_transcript_from_visible_text_discards_toolbar_noise(self) -> None:
+        collector = LoomCollector()
+
+        transcript = collector._extract_timestamped_transcript_from_text(
+            """
+            Edit
+            Activity
+            Generate
+            Transcript
+            Settings
+            Copy
+            Correct
+            Download
+            Language
+            Search
+            00:03 Да, Миша, може, нам ще треба, ну, щоб він в курсі був.
+            00:20 Давайте просто тоді позапитуємо Стаса, як він там налагодив.
+            00:48 Ігор озвучував питання вчора, тому треба синхронізувати процес.
+            Contact Sales
+            Try it out
+            """
+        )
+
+        self.assertIn("00:03 Да, Миша", transcript)
+        self.assertIn("00:48 Ігор", transcript)
+        self.assertNotIn("Copy", transcript)
+        self.assertNotIn("Contact Sales", transcript)
+
+    def test_extract_transcript_falls_back_to_visible_page_text_when_copy_is_empty(self) -> None:
+        collector = LoomCollector()
+        driver = _FakeDriver(
+            url="https://www.loom.com/share/example-video",
+            title="Example video | Loom",
+            visible_text="""
+                Edit
+                Activity
+                Generate
+                Transcript
+                Settings
+                Copy
+                Correct
+                Download
+                Language
+                Search
+                00:03 First spoken point
+                00:20 Second spoken point
+                00:48 Third spoken point
+            """,
+        )
+
+        collector._detect_login_blocker = lambda _driver: None
+        collector._open_transcript_panel = lambda _driver, _wait: True
+        collector._extract_transcript_via_copy_button = lambda _driver, _wait: ""
+        collector._extract_transcript_from_timestamped_blocks = lambda _driver: ""
+        collector._extract_virtualized_transcript_rows = lambda _driver: ""
+        collector._extract_transcript_text_from_dom = lambda _driver: ""
+
+        transcript, _title = collector._extract_transcript(driver, object(), driver.current_url)
+
+        self.assertIn("00:03 First spoken point", transcript)
+        self.assertIn("00:48 Third spoken point", transcript)
+
     def test_read_all_library_links_includes_share_urls_from_html(self) -> None:
         collector = LoomCollector()
         driver = _FakeDriver(

@@ -208,7 +208,15 @@ class LoomCollector:
                     continue
                 if not transcript_text:
                     debug["skipped_empty_transcript"] = int(debug["skipped_empty_transcript"]) + 1
-                    self._append_debug_skip(debug, reason="empty_transcript", link=link, title=title)
+                    details = self._build_empty_transcript_details(driver, video_url=link, title=title)
+                    logger.warning("Skipping Loom video %s because transcript content was empty. %s", link, details)
+                    self._append_debug_skip(
+                        debug,
+                        reason="empty_transcript",
+                        link=link,
+                        title=title,
+                        details=details,
+                    )
                     continue
                 resolved_title = title or video_id
                 recorded_at = self._infer_recorded_at(resolved_title)
@@ -905,13 +913,18 @@ class LoomCollector:
 
             transcript_opened = self._open_transcript_panel(driver, wait)
             transcript_text = self._extract_transcript_via_copy_button(driver, wait) or (
-                self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(driver)
+                self._extract_transcript_from_timestamped_blocks(driver)
+                or self._extract_transcript_from_visible_page_text(driver)
+                or self._extract_virtualized_transcript_rows(driver)
+                or self._extract_transcript_text_from_dom(driver)
             )
             if not transcript_text and transcript_opened:
                 try:
                     wait.until(
                         lambda d: bool(
                             self._extract_transcript_via_copy_button(d, wait)
+                            or self._extract_transcript_from_timestamped_blocks(d)
+                            or self._extract_transcript_from_visible_page_text(d)
                             or self._extract_virtualized_transcript_rows(d)
                             or self._extract_transcript_text_from_dom(d)
                         )
@@ -930,7 +943,10 @@ class LoomCollector:
                         parts.append(f"Diagnostics: {diagnostics}")
                     raise TimeoutException(" | ".join(parts)) from exc
                 transcript_text = self._extract_transcript_via_copy_button(driver, wait) or (
-                    self._extract_virtualized_transcript_rows(driver) or self._extract_transcript_text_from_dom(driver)
+                    self._extract_transcript_from_timestamped_blocks(driver)
+                    or self._extract_transcript_from_visible_page_text(driver)
+                    or self._extract_virtualized_transcript_rows(driver)
+                    or self._extract_transcript_text_from_dom(driver)
                 )
 
             cleaned = self._clean_transcript_text(transcript_text)
@@ -1098,6 +1114,102 @@ class LoomCollector:
             time.sleep(0.2)
 
         return "\n".join(rows).strip()
+
+    def _extract_transcript_from_timestamped_blocks(self, driver) -> str:
+        try:
+            candidates = driver.execute_script(
+                """
+                const timestampRegex = /\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\b/g;
+
+                const isVisible = (element) => {
+                  if (!element) return false;
+                  const style = window.getComputedStyle(element);
+                  if (!style) return false;
+                  if (style.display === 'none' || style.visibility === 'hidden') return false;
+                  const rect = element.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                };
+
+                const results = [];
+                const seen = new Set();
+                for (const element of Array.from(document.querySelectorAll('*'))) {
+                  if (!isVisible(element)) continue;
+                  const text = (element.innerText || element.textContent || '').trim();
+                  if (!text || text.length < 40 || text.length > 50000) continue;
+                  const timestamps = text.match(timestampRegex) || [];
+                  if (timestamps.length < 2) continue;
+                  const key = text.slice(0, 1000);
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  results.push(text);
+                }
+
+                results.sort((left, right) => right.length - left.length);
+                return results.slice(0, 20);
+                """
+            ) or []
+        except Exception:
+            candidates = []
+
+        return self._select_transcript_candidate(candidates)
+
+    def _extract_transcript_from_visible_page_text(self, driver) -> str:
+        return self._extract_timestamped_transcript_from_text(self._safe_visible_text(driver))
+
+    def _extract_timestamped_transcript_from_text(self, text: str | None) -> str:
+        if not text:
+            return ""
+
+        timestamp_pattern = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\b")
+        ignored_prefixes = (
+            "copy",
+            "correct",
+            "download",
+            "language",
+            "search",
+            "contact sales",
+            "try it out",
+            "share",
+            "settings",
+            "generate",
+            "activity",
+            "edit",
+            "transcript",
+            "comments",
+        )
+
+        lines = [line.strip() for line in text.splitlines() if line and line.strip()]
+        captured: list[str] = []
+        timestamp_count = 0
+        gap_count = 0
+        started = False
+
+        for line in lines:
+            lowered = line.lower()
+            is_timestamp_line = bool(timestamp_pattern.match(line))
+            if is_timestamp_line:
+                started = True
+                timestamp_count += 1
+                gap_count = 0
+                captured.append(line)
+                continue
+
+            if not started:
+                continue
+
+            if any(lowered.startswith(prefix) for prefix in ignored_prefixes):
+                gap_count += 1
+            else:
+                captured.append(line)
+                gap_count = 0
+
+            if gap_count >= 3 and timestamp_count >= 2:
+                break
+
+        transcript = self._clean_transcript_text("\n".join(captured))
+        if timestamp_count < 2:
+            return ""
+        return transcript
 
     def _read_visible_transcript_rows(self, driver) -> list[str]:
         try:
@@ -1737,6 +1849,24 @@ class LoomCollector:
         if len(normalized) <= limit:
             return normalized
         return normalized[: limit - 3].rstrip(" ,;:.") + "..."
+
+    def _build_empty_transcript_details(self, driver, *, video_url: str, title: str | None) -> str:
+        current_url = self._safe_current_url(driver)
+        visible_text = self._summarize_visible_text(self._safe_visible_text(driver), limit=500)
+        diagnostics = self._capture_browser_diagnostics(driver, prefix="loom-empty-transcript")
+
+        parts = ["Transcript panel did not yield any usable text."]
+        if video_url:
+            parts.append(f"Video URL: {video_url}")
+        if current_url and current_url != video_url:
+            parts.append(f"Last URL: {current_url}")
+        if title:
+            parts.append(f"Last title: {title}")
+        if visible_text:
+            parts.append(f"Visible text: {visible_text}")
+        if diagnostics:
+            parts.append(f"Diagnostics: {diagnostics}")
+        return " | ".join(parts)
 
     def _resolve_profile_dir(self) -> tuple[str, bool]:
         configured_dir = self.chrome_user_data_dir or os.environ.get("CHROME_USER_DATA_DIR")
