@@ -60,6 +60,11 @@ class Settings(BaseSettings):
 
     telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: Optional[str] = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    telegram_channel_username: Optional[str] = Field(default=None, alias="TELEGRAM_CHANNEL_USERNAME")
+
+    meeting_digest_bot_base_url: Optional[str] = Field(default=None, alias="MEETING_DIGEST_BOT_BASE_URL")
+    meeting_digest_bot_timeout_seconds: int = Field(default=15, alias="MEETING_DIGEST_BOT_TIMEOUT_SECONDS")
+    meeting_digest_shared_secret: Optional[str] = Field(default=None, alias="MEETING_DIGEST_SHARED_SECRET")
 
     webhook_shared_secret: Optional[str] = Field(default=None, alias="WEBHOOK_SHARED_SECRET")
 

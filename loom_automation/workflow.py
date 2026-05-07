@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,6 +9,7 @@ from typing import Any
 
 from loom_automation.integrations.google_workspace import GoogleWorkspacePublisher
 from loom_automation.integrations.loom import LoomClient
+from loom_automation.integrations.meeting_digest_bot import MeetingDigestBotClient
 from loom_automation.integrations.storage import SQLiteStorage
 from loom_automation.integrations.telegram import TelegramNotifier
 from loom_automation.models import DailyDigestRequest, LoomImportRequest, ProcessFolderRequest, ProcessMeetingRequest
@@ -19,12 +21,16 @@ from loom_automation.modules.transcriber import Transcriber
 from loom_automation.pipelines.discord_loom import DiscordLoomPipeline
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class AutomationWorkflow:
     loom_client: LoomClient
     storage: SQLiteStorage
     google_publisher: GoogleWorkspacePublisher
     telegram_notifier: TelegramNotifier
+    meeting_digest_bot: MeetingDigestBotClient | None = None
 
     def _resolve_llm_provider(self) -> str:
         provider = getattr(self.loom_client, "llm_provider", None)
@@ -96,6 +102,7 @@ class AutomationWorkflow:
             storage=self.storage,
             google_publisher=self.google_publisher,
             telegram_notifier=self.telegram_notifier,
+            meeting_digest_bot=self.meeting_digest_bot,
         )
 
     def _override_runtime(self, **overrides: Any) -> dict[str, Any]:
@@ -285,6 +292,27 @@ class AutomationWorkflow:
                     "filters": effective_filters,
                     "collection_debug": result.get("collection_debug", {}),
                     "titles": [item.get("meeting", {}).get("title") for item in processed[:5]],
+                    "telegram": [
+                        {
+                            "loom_video_id": item.get("meeting", {}).get("loom_video_id"),
+                            "sent": item.get("telegram", {}).get("sent"),
+                            "message_id": item.get("telegram", {}).get("message_id"),
+                            "chat_id": item.get("telegram", {}).get("chat_id"),
+                        }
+                        for item in processed[:10]
+                    ],
+                    "meeting_digest_bot": [
+                        {
+                            "loom_video_id": item.get("meeting", {}).get("loom_video_id"),
+                            "registered": item.get("meeting_digest_bot", {}).get("registered"),
+                            "reason": item.get("meeting_digest_bot", {}).get("reason"),
+                            "error": item.get("meeting_digest_bot", {}).get("error"),
+                            "post_url": item.get("meeting_digest_bot", {}).get("record", {}).get("post_url")
+                            if isinstance(item.get("meeting_digest_bot", {}).get("record"), dict)
+                            else item.get("meeting_digest_bot", {}).get("post_url"),
+                        }
+                        for item in processed[:10]
+                    ],
                 },
             )
         except Exception as exc:
@@ -343,10 +371,25 @@ class AutomationWorkflow:
 
         try:
             telegram_result = self.telegram_notifier.send_digest(digest.telegram_digest)
+            publication_result = self._register_daily_publication(
+                report_date=request.report_date,
+                telegram_result=telegram_result,
+                payload={
+                    "items": [
+                        {
+                            "loom_video_id": item["loom_video_id"],
+                            "title": item["title"],
+                            "source_url": item["source_url"],
+                        }
+                        for item in payload
+                    ]
+                },
+            )
             result = {
                 "items": payload,
                 "digest": digest.model_dump(),
                 "telegram": telegram_result,
+                "meeting_digest_bot": publication_result,
             }
             self._log_run(
                 run_type="daily_digest",
@@ -375,3 +418,35 @@ class AutomationWorkflow:
                 },
             )
             raise
+
+    def _register_daily_publication(
+        self,
+        *,
+        report_date: date,
+        telegram_result: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.meeting_digest_bot or not telegram_result.get("sent"):
+            return {"registered": False, "reason": "MeetingDigestBot is disabled or Telegram send failed."}
+        try:
+            result = self.meeting_digest_bot.register_daily_publication(
+                report_date=report_date,
+                telegram_result=telegram_result,
+                google_doc_url=self.google_publisher.current_doc_url(),
+                transcript_doc_url=self.google_publisher.current_transcript_doc_url(),
+                payload=payload,
+            )
+            logger.info(
+                "Registered MeetingDigestBot daily publication for %s as Telegram message %s",
+                report_date.isoformat(),
+                telegram_result.get("message_id"),
+            )
+            return result
+        except Exception as exc:
+            logger.warning(
+                "Failed to register MeetingDigestBot daily publication for %s after Telegram message %s: %s",
+                report_date.isoformat(),
+                telegram_result.get("message_id"),
+                exc,
+            )
+            return {"registered": False, "error": str(exc)}

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from loom_automation.integrations.google_workspace import GoogleWorkspacePublisher
+from loom_automation.integrations.meeting_digest_bot import MeetingDigestBotClient
 from loom_automation.integrations.storage import SQLiteStorage
 from loom_automation.integrations.telegram import TelegramNotifier
 from loom_automation.models import LoomImportRequest, ProcessFolderRequest, ProcessMeetingRequest
@@ -11,6 +13,9 @@ from loom_automation.modules.summarizer import Summarizer
 from loom_automation.modules.telegram_reporter import TelegramReporter
 from loom_automation.modules.transcript_processor import TranscriptProcessor
 from loom_automation.modules.transcriber import Transcriber
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,6 +28,7 @@ class DiscordLoomPipeline:
     storage: SQLiteStorage
     google_publisher: GoogleWorkspacePublisher
     telegram_notifier: TelegramNotifier
+    meeting_digest_bot: MeetingDigestBotClient | None = None
 
     def run(self, request: ProcessMeetingRequest) -> dict:
         collected = self._collect(request)
@@ -54,6 +60,12 @@ class DiscordLoomPipeline:
             transcript_section_title=self.google_publisher.transcript_section_title(meeting),
         )
         telegram_result = self.telegram_notifier.send_digest(artifacts.telegram_digest)
+        publication_result = self._register_meeting_publication(
+            meeting=meeting,
+            telegram_result=telegram_result,
+            google_result=google_result,
+            artifacts=artifacts.model_dump(),
+        )
 
         return {
             "pipeline": "discord-loom",
@@ -62,6 +74,7 @@ class DiscordLoomPipeline:
             "artifacts": artifacts.model_dump(),
             "google": google_result,
             "telegram": telegram_result,
+            "meeting_digest_bot": publication_result,
         }
 
     def run_folder(self, request: ProcessFolderRequest) -> dict:
@@ -154,6 +167,12 @@ class DiscordLoomPipeline:
                 transcript_section_title=self.google_publisher.transcript_section_title(meeting),
             )
             telegram_result = self.telegram_notifier.send_digest(artifacts.telegram_digest)
+            publication_result = self._register_meeting_publication(
+                meeting=meeting,
+                telegram_result=telegram_result,
+                google_result=google_result,
+                artifacts=artifacts.model_dump(),
+            )
             results.append(
                 {
                     "meeting": meeting.model_dump(),
@@ -161,6 +180,7 @@ class DiscordLoomPipeline:
                     "artifacts": artifacts.model_dump(),
                     "google": google_result,
                     "telegram": telegram_result,
+                    "meeting_digest_bot": publication_result,
                 }
             )
 
@@ -211,3 +231,35 @@ class DiscordLoomPipeline:
         with self.storage._connect() as conn:
             rows = conn.execute("SELECT source_url FROM meetings").fetchall()
         return {row[0] for row in rows}
+
+    def _register_meeting_publication(
+        self,
+        *,
+        meeting,
+        telegram_result: dict,
+        google_result: dict | None,
+        artifacts: dict,
+    ) -> dict:
+        if not self.meeting_digest_bot or not telegram_result.get("sent"):
+            return {"registered": False, "reason": "MeetingDigestBot is disabled or Telegram send failed."}
+        try:
+            result = self.meeting_digest_bot.register_meeting_publication(
+                meeting=meeting,
+                telegram_result=telegram_result,
+                google_result=google_result,
+                payload={"artifacts": artifacts},
+            )
+            logger.info(
+                "Registered MeetingDigestBot publication for Loom %s as Telegram message %s",
+                getattr(meeting, "loom_video_id", None),
+                telegram_result.get("message_id"),
+            )
+            return result
+        except Exception as exc:
+            logger.warning(
+                "Failed to register MeetingDigestBot publication for Loom %s after Telegram message %s: %s",
+                getattr(meeting, "loom_video_id", None),
+                telegram_result.get("message_id"),
+                exc,
+            )
+            return {"registered": False, "error": str(exc)}

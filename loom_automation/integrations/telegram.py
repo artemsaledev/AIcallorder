@@ -27,5 +27,6 @@ class TelegramNotifier:
         return {
             "sent": bool(payload.get("ok")),
             "message_id": payload.get("result", {}).get("message_id"),
+            "chat_id": payload.get("result", {}).get("chat", {}).get("id", self.chat_id),
             "preview": text[:500],
         }

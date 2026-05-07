@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from loom_automation.config import get_settings
 from loom_automation.integrations.google_workspace import GoogleWorkspacePublisher
 from loom_automation.integrations.loom import LoomClient
+from loom_automation.integrations.meeting_digest_bot import MeetingDigestBotClient
 from loom_automation.integrations.storage import SQLiteStorage
 from loom_automation.integrations.telegram import TelegramNotifier
 from loom_automation.models import DailyDigestRequest, LoomImportRequest, ProcessFolderRequest, ProcessMeetingRequest
@@ -66,6 +67,12 @@ workflow = AutomationWorkflow(
     telegram_notifier=TelegramNotifier(
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,
+    ),
+    meeting_digest_bot=MeetingDigestBotClient(
+        base_url=settings.meeting_digest_bot_base_url,
+        channel_username=settings.telegram_channel_username,
+        shared_secret=settings.meeting_digest_shared_secret,
+        timeout_seconds=settings.meeting_digest_bot_timeout_seconds,
     ),
 )
 
