@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 import json
+import ast
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, List, Tuple
 
 from loom_automation.models import MeetingArtifacts, MeetingMetadata
@@ -46,6 +48,25 @@ class SQLiteStorage:
                     started_at TEXT NOT NULL,
                     finished_at TEXT NOT NULL,
                     summary_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meeting_publications (
+                    loom_video_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    google_status TEXT NOT NULL,
+                    telegram_status TEXT NOT NULL,
+                    register_status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    google_result_json TEXT,
+                    telegram_result_json TEXT,
+                    register_result_json TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (loom_video_id) REFERENCES meetings(loom_video_id) ON DELETE CASCADE
                 )
                 """
             )
@@ -134,9 +155,25 @@ class SQLiteStorage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT loom_video_id, source_url, title, meeting_type, recorded_at, transcript_text, artifacts_json
+                SELECT
+                    meetings.loom_video_id,
+                    source_url,
+                    title,
+                    meeting_type,
+                    recorded_at,
+                    transcript_text,
+                    artifacts_json,
+                    meeting_publications.status,
+                    meeting_publications.google_status,
+                    meeting_publications.telegram_status,
+                    meeting_publications.register_status,
+                    meeting_publications.attempts,
+                    meeting_publications.last_error,
+                    meeting_publications.updated_at
                 FROM meetings
-                ORDER BY COALESCE(recorded_at, '') DESC, rowid DESC
+                LEFT JOIN meeting_publications
+                    ON meeting_publications.loom_video_id = meetings.loom_video_id
+                ORDER BY COALESCE(recorded_at, '') DESC, meetings.rowid DESC
                 LIMIT ?
                 OFFSET ?
                 """,
@@ -159,6 +196,17 @@ class SQLiteStorage:
                     "recorded_at": row[4],
                     "transcript_text": row[5],
                     "artifacts": artifacts,
+                    "publication": {
+                        "status": row[7],
+                        "google_status": row[8],
+                        "telegram_status": row[9],
+                        "register_status": row[10],
+                        "attempts": row[11],
+                        "last_error": row[12],
+                        "updated_at": row[13],
+                    }
+                    if row[7]
+                    else None,
                 }
             )
         return results
@@ -196,6 +244,188 @@ class SQLiteStorage:
             "transcript_text": row[5],
             "artifacts": artifacts,
         }
+
+    def begin_meeting_publication(self, loom_video_id: str) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO meeting_publications (
+                    loom_video_id,
+                    status,
+                    google_status,
+                    telegram_status,
+                    register_status,
+                    attempts,
+                    created_at,
+                    updated_at
+                ) VALUES (?, 'in_progress', 'pending', 'pending', 'pending', 1, ?, ?)
+                ON CONFLICT(loom_video_id) DO UPDATE SET
+                    status = 'in_progress',
+                    attempts = meeting_publications.attempts + 1,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (loom_video_id, now, now),
+            )
+            conn.commit()
+        return self.get_meeting_publication(loom_video_id) or {}
+
+    def update_meeting_publication_step(
+        self,
+        loom_video_id: str,
+        *,
+        step: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        if step not in {"google", "telegram", "register"}:
+            raise ValueError(f"Unsupported publication step: {step}")
+        now = datetime.now(timezone.utc).isoformat()
+        status_column = f"{step}_status"
+        result_column = f"{step}_result_json"
+        result_json = json.dumps(result or {}, ensure_ascii=False) if result is not None else None
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE meeting_publications
+                SET {status_column} = ?,
+                    {result_column} = COALESCE(?, {result_column}),
+                    last_error = ?,
+                    updated_at = ?
+                WHERE loom_video_id = ?
+                """,
+                (status, result_json, error, now, loom_video_id),
+            )
+            conn.commit()
+        return self.get_meeting_publication(loom_video_id) or {}
+
+    def complete_meeting_publication(self, loom_video_id: str, *, status: str, error: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE meeting_publications
+                SET status = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE loom_video_id = ?
+                """,
+                (status, error, now, loom_video_id),
+            )
+            conn.commit()
+
+    def get_meeting_publication(self, loom_video_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    loom_video_id,
+                    status,
+                    google_status,
+                    telegram_status,
+                    register_status,
+                    attempts,
+                    google_result_json,
+                    telegram_result_json,
+                    register_result_json,
+                    last_error,
+                    created_at,
+                    updated_at
+                FROM meeting_publications
+                WHERE loom_video_id = ?
+                LIMIT 1
+                """,
+                (loom_video_id,),
+            ).fetchone()
+        if not row:
+            return None
+
+        def parse_json(value: str | None) -> dict[str, Any] | None:
+            if not value:
+                return None
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {"raw": value}
+            return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+        return {
+            "loom_video_id": row[0],
+            "status": row[1],
+            "google_status": row[2],
+            "telegram_status": row[3],
+            "register_status": row[4],
+            "attempts": row[5],
+            "google_result": parse_json(row[6]),
+            "telegram_result": parse_json(row[7]),
+            "register_result": parse_json(row[8]),
+            "last_error": row[9],
+            "created_at": row[10],
+            "updated_at": row[11],
+        }
+
+    def list_unpublished_meeting_records(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    meetings.loom_video_id,
+                    source_url,
+                    title,
+                    meeting_type,
+                    recorded_at,
+                    participants_json,
+                    transcript_text,
+                    artifacts_json,
+                    meeting_publications.status,
+                    meeting_publications.attempts
+                FROM meetings
+                JOIN meeting_publications
+                    ON meeting_publications.loom_video_id = meetings.loom_video_id
+                WHERE meeting_publications.status != 'published'
+                  AND meetings.artifacts_json IS NOT NULL
+                ORDER BY meeting_publications.updated_at ASC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            artifacts = None
+            try:
+                artifacts = json.loads(row[7]) if row[7] else None
+            except json.JSONDecodeError:
+                artifacts = None
+            participants: list[str] = []
+            try:
+                loaded = json.loads(row[5] or "[]")
+                if isinstance(loaded, list):
+                    participants = [str(item) for item in loaded]
+            except json.JSONDecodeError:
+                try:
+                    loaded = ast.literal_eval(row[5] or "[]")
+                    if isinstance(loaded, list):
+                        participants = [str(item) for item in loaded]
+                except (SyntaxError, ValueError):
+                    participants = []
+            results.append(
+                {
+                    "loom_video_id": row[0],
+                    "source_url": row[1],
+                    "title": row[2],
+                    "meeting_type": row[3],
+                    "recorded_at": row[4],
+                    "participants": participants,
+                    "transcript_text": row[6],
+                    "artifacts": artifacts,
+                    "publication_status": row[8],
+                    "publication_attempts": row[9],
+                }
+            )
+        return results
 
     def delete_meeting(self, loom_video_id: str) -> bool:
         with self._connect() as conn:

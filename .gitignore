@@ -10,6 +10,7 @@ env/
 .tmp/
 
 .env
+secure/
 downloads/
 data/
 logs/

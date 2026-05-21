@@ -52,9 +52,25 @@ class Settings(BaseSettings):
     prefer_local_whisper_for_local_files: bool = Field(default=True, alias="PREFER_LOCAL_WHISPER_FOR_LOCAL_FILES")
 
     google_service_account_json: Optional[str] = Field(default=None, alias="GOOGLE_SERVICE_ACCOUNT_JSON")
+    google_auth_mode: str = Field(default="service_account", alias="GOOGLE_AUTH_MODE")
+    google_oauth_client_json: Optional[str] = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_JSON")
+    google_oauth_token_json: Optional[str] = Field(default=None, alias="GOOGLE_OAUTH_TOKEN_JSON")
     google_docs_folder_id: Optional[str] = Field(default=None, alias="GOOGLE_DOCS_FOLDER_ID")
     google_doc_id: Optional[str] = Field(default=None, alias="GOOGLE_DOC_ID")
     google_transcript_doc_id: Optional[str] = Field(default=None, alias="GOOGLE_TRANSCRIPT_DOC_ID")
+    google_transcript_doc_rotate_enabled: bool = Field(default=True, alias="GOOGLE_TRANSCRIPT_DOC_ROTATE_ENABLED")
+    google_transcript_doc_soft_char_limit: int = Field(
+        default=900_000,
+        alias="GOOGLE_TRANSCRIPT_DOC_SOFT_CHAR_LIMIT",
+    )
+    google_transcript_doc_state_path: str = Field(
+        default="data/google_transcript_doc_state.json",
+        alias="GOOGLE_TRANSCRIPT_DOC_STATE_PATH",
+    )
+    google_transcript_doc_title_prefix: str = Field(
+        default="LLM-Transcript",
+        alias="GOOGLE_TRANSCRIPT_DOC_TITLE_PREFIX",
+    )
     google_sheets_id: Optional[str] = Field(default=None, alias="GOOGLE_SHEETS_ID")
     google_sheets_worksheet: str = Field(default="Transcript", alias="GOOGLE_SHEETS_WORKSHEET")
 

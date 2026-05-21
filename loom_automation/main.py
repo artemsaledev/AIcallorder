@@ -57,10 +57,17 @@ workflow = AutomationWorkflow(
     ),
     storage=SQLiteStorage(settings.database_url),
     google_publisher=GoogleWorkspacePublisher(
+        auth_mode=settings.google_auth_mode,
         service_account_json=settings.google_service_account_json,
+        oauth_client_json=settings.google_oauth_client_json,
+        oauth_token_json=settings.google_oauth_token_json,
         docs_folder_id=settings.google_docs_folder_id,
         doc_id=settings.google_doc_id,
         transcript_doc_id=settings.google_transcript_doc_id,
+        transcript_doc_rotate_enabled=settings.google_transcript_doc_rotate_enabled,
+        transcript_doc_soft_char_limit=settings.google_transcript_doc_soft_char_limit,
+        transcript_doc_state_path=settings.google_transcript_doc_state_path,
+        transcript_doc_title_prefix=settings.google_transcript_doc_title_prefix,
         sheets_id=settings.google_sheets_id,
         worksheet_name=settings.google_sheets_worksheet,
     ),
@@ -523,12 +530,27 @@ def _operations_html(meetings_page: int = 1, runs_page: int = 1) -> str:
         if isinstance(artifacts, dict):
             summary = html.escape(_truncate(artifacts.get("summary", ""), 260))
         transcript_preview = html.escape(_truncate(item.get("transcript_text", ""), 320))
+        publication = item.get("publication") or {}
+        publication_status = html.escape(str(publication.get("status") or "legacy/not tracked"))
+        publication_steps = html.escape(
+            " | ".join(
+                [
+                    f"google={publication.get('google_status') or '-'}",
+                    f"telegram={publication.get('telegram_status') or '-'}",
+                    f"register={publication.get('register_status') or '-'}",
+                    f"attempts={publication.get('attempts') or 0}",
+                ]
+            )
+        )
+        publication_error = html.escape(_truncate(publication.get("last_error") or "", 180))
         meeting_rows.append(
             f"""
             <div class="summary-box">
               <strong>{title}</strong>
               <div class="hint">ID: <code>{loom_video_id}</code></div>
               <div class="hint">Type: <code>{meeting_type}</code> | Recorded: <code>{recorded_at}</code></div>
+              <div class="hint">Publication: <code>{publication_status}</code> | <code>{publication_steps}</code></div>
+              {f'<div class="hint">Publication error: <code>{publication_error}</code></div>' if publication_error else ''}
               <div class="hint">URL: <a href="{source_url}" target="_blank" rel="noreferrer">{source_url or 'n/a'}</a></div>
               <p style="margin-top:10px;"><strong>Summary</strong><br />{summary or 'No artifacts yet.'}</p>
               <p style="margin-top:10px;"><strong>Transcript preview</strong><br />{transcript_preview or 'No transcript preview.'}</p>

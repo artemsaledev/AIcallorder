@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import json
 import re
 from typing import Any
@@ -65,6 +65,18 @@ def extract_source_tags(*values: Any) -> list[str]:
     return tags
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 @dataclass
 class MeetingDigestBotClient:
     base_url: str | None = None
@@ -117,7 +129,7 @@ class MeetingDigestBotClient:
             "source_tags": source_tags,
             "payload": payload_body,
         }
-        return self._register(body)
+        return self._register(_json_safe(body))
 
     def register_daily_publication(
         self,
@@ -147,7 +159,7 @@ class MeetingDigestBotClient:
             "transcript_doc_url": transcript_doc_url,
             "payload": payload or {},
         }
-        return self._register(body)
+        return self._register(_json_safe(body))
 
     def _register(self, body: dict[str, Any]) -> dict[str, Any]:
         headers = {}

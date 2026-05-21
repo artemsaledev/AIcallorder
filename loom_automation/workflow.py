@@ -193,6 +193,7 @@ class AutomationWorkflow:
                     "loom_video_id": result.get("meeting", {}).get("loom_video_id"),
                     "title": result.get("meeting", {}).get("title"),
                     "telegram_sent": result.get("telegram", {}).get("sent"),
+                    "publication_status": result.get("publication_status"),
                 },
             )
         except Exception as exc:
@@ -280,14 +281,19 @@ class AutomationWorkflow:
         try:
             result = self._build_discord_loom_pipeline().run_loom_import(request)
             processed = result.get("results", [])
+            retried = result.get("retry_results", [])
+            publication_items = [*retried, *processed]
             self._log_run(
                 run_type="loom_import",
                 initiated_by=initiated_by,
                 started_at=started_at,
-                status="success",
+                status="partial_error"
+                if any(item.get("publication_status") == "error" for item in publication_items)
+                else "success",
                 summary={
                     "meeting_type": request.meeting_type,
                     "processed_count": result.get("processed_count", 0),
+                    "retry_count": result.get("retry_count", 0),
                     "limit": request.limit,
                     "filters": effective_filters,
                     "collection_debug": result.get("collection_debug", {}),
@@ -299,11 +305,12 @@ class AutomationWorkflow:
                             "message_id": item.get("telegram", {}).get("message_id"),
                             "chat_id": item.get("telegram", {}).get("chat_id"),
                         }
-                        for item in processed[:10]
+                        for item in publication_items[:10]
                     ],
                     "meeting_digest_bot": [
                         {
                             "loom_video_id": item.get("meeting", {}).get("loom_video_id"),
+                            "publication_status": item.get("publication_status"),
                             "registered": item.get("meeting_digest_bot", {}).get("registered"),
                             "reason": item.get("meeting_digest_bot", {}).get("reason"),
                             "error": item.get("meeting_digest_bot", {}).get("error"),
@@ -311,7 +318,7 @@ class AutomationWorkflow:
                             if isinstance(item.get("meeting_digest_bot", {}).get("record"), dict)
                             else item.get("meeting_digest_bot", {}).get("post_url"),
                         }
-                        for item in processed[:10]
+                        for item in publication_items[:10]
                     ],
                 },
             )
