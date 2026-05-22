@@ -51,9 +51,9 @@ def extract_source_tags(*values: Any) -> list[str]:
                     nested_values.extend(nested)
                 elif nested:
                     nested_values.append(nested)
-            text = json.dumps(nested_values, ensure_ascii=False)
+            text = json.dumps(_json_safe(nested_values), ensure_ascii=False)
         elif isinstance(value, list):
-            text = json.dumps(value, ensure_ascii=False)
+            text = json.dumps(_json_safe(value), ensure_ascii=False)
         else:
             text = str(value)
         for raw_tag in re.findall(r"#[\wА-Яа-яІіЇїЄєҐґ-]+", text, flags=re.UNICODE):

@@ -62,7 +62,7 @@ class DiscordLoomPipeline:
             "pipeline": "discord-loom",
             "transcript_source": transcript.source,
             "meeting": meeting.model_dump(),
-            "artifacts": artifacts.model_dump(),
+            "artifacts": artifacts.model_dump(mode="json"),
             **publication_result,
         }
 
@@ -99,7 +99,7 @@ class DiscordLoomPipeline:
                 {
                     "meeting": meeting.model_dump(),
                     "transcript_source": transcript.source,
-                    "artifacts": artifacts.model_dump(),
+                    "artifacts": artifacts.model_dump(mode="json"),
                 }
             )
 
@@ -156,7 +156,7 @@ class DiscordLoomPipeline:
                 {
                     "meeting": meeting.model_dump(),
                     "transcript_source": transcript.source,
-                    "artifacts": artifacts.model_dump(),
+                    "artifacts": artifacts.model_dump(mode="json"),
                     **publication_result,
                 }
             )
@@ -379,7 +379,7 @@ class DiscordLoomPipeline:
                 meeting=meeting,
                 telegram_result=telegram_result,
                 google_result=google_result,
-                artifacts=artifacts.model_dump(),
+                artifacts=artifacts.model_dump(mode="json"),
             )
             register_ok = bool(
                 meeting_digest_bot_result.get("registered")

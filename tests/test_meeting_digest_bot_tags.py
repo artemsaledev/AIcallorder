@@ -31,6 +31,13 @@ class MeetingDigestBotTagTests(unittest.TestCase):
             },
         )
 
+    def test_extract_tags_tolerates_dates_in_payload(self) -> None:
+        tags = extract_source_tags(
+            "#task_demo QA Support",
+            {"artifacts": {"due": date(2026, 5, 21), "summary": "demo"}},
+        )
+        self.assertEqual(tags, ["#task_demo"])
+
 
 if __name__ == "__main__":
     unittest.main()
